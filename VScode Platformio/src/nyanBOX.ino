@@ -69,31 +69,15 @@ void about() {
   u8g2.sendBuffer();
 }
 
-MenuItem menu[] = {
-  { "Scanner",        bitmap_icon_scanner,       scannerSetup,        scannerLoop       },
-  { "Analyzer",       bitmap_icon_analyzer,      analyzerSetup,       analyzerLoop      },
-  { "WLAN Jammer",    bitmap_icon_jammer,        jammerSetup,         jammerLoop        },
-  { "Proto Kill",     bitmap_icon_kill,          blackoutSetup,       blackoutLoop      },
-  { "BLE Jammer",     bitmap_icon_ble_jammer,    blejammerSetup,      blejammerLoop     },
-  { "BLE Spoofer",    bitmap_icon_spoofer,       spooferSetup,        spooferLoop       },
-  { "Sour Apple",     bitmap_icon_apple,         sourappleSetup,      sourappleLoop     },
-  { "BLE Scan",       bitmap_icon_ble,           blescanSetup,        nullptr           },
-  { "BLE Spammer",    bitmap_icon_ble,           bleSpamSetup,        bleSpamLoop       },
-  { "Flipper Scan",   bitmap_icon_ble,           flipperSetup,        nullptr           },
-  { "WiFi Scan",      bitmap_icon_wifi,          wifiscanSetup,       wifiscanLoop      },
-  { "WiFi Deauther",  bitmap_icon_wifi,          deauthSetup,         deauthLoop        },
-  { "Deauth Scanner", bitmap_icon_wifi,          deauthScannerSetup,  deauthScannerLoop },
-  { "Beacon Spam",    bitmap_icon_wifi,          beaconSpamSetup,     beaconSpamLoop    },
-  { "About",          bitmap_icon_about,         about,               about             },
-  { "Setting",        bitmap_icon_setting,       settingSetup,        settingLoop       }
-};
+enum AppMenuState { APP_MAIN, APP_BLE, APP_WIFI, APP_OTHER };
+AppMenuState currentState = APP_MAIN;
+MenuItem*  currentMenuItems = nullptr;
+int        currentMenuSize  = 0;
+int        item_selected    = 0;
 
-constexpr int NUM_ITEMS = sizeof(menu) / sizeof(menu[0]);
 constexpr uint8_t BUTTON_UP    = BUTTON_PIN_UP;
 constexpr uint8_t BUTTON_SEL   = BUTTON_PIN_CENTER;
 constexpr uint8_t BUTTON_DOWN  = BUTTON_PIN_DOWN;
-
-uint8_t item_selected = 0;
 bool upPrev = false, downPrev = false, selPrev = false;
 
 bool justPressed(uint8_t pin, bool &prev) {
@@ -103,18 +87,84 @@ bool justPressed(uint8_t pin, bool &prev) {
   return false;
 }
 
-void runApp(int idx) {
-  menu[idx].setup();
-  if (menu[idx].loop) {
-    while (digitalRead(BUTTON_SEL) == LOW);
-    while (true) {
-      menu[idx].loop();
-      if (digitalRead(BUTTON_SEL) == LOW) {
-        while (digitalRead(BUTTON_SEL) == LOW);
-        break;
+void enterMenu(AppMenuState st);
+void runApp(MenuItem &mi);
+
+MenuItem mainMenu[] = {
+  { "BLE",   bitmap_icon_ble,     nullptr, nullptr },
+  { "WiFi",  bitmap_icon_wifi,    nullptr, nullptr },
+  { "Other", bitmap_icon_scanner, nullptr, nullptr }
+};
+constexpr int MAIN_MENU_SIZE = sizeof(mainMenu) / sizeof(mainMenu[0]);
+
+MenuItem bleMenu[] = {
+  { "BLE Jammer",   nullptr, blejammerSetup,    blejammerLoop    },
+  { "BLE Spoofer",  nullptr, spooferSetup,      spooferLoop      },
+  { "Sour Apple",   nullptr, sourappleSetup,    sourappleLoop    },
+  { "BLE Scan",     nullptr, blescanSetup,      nullptr          },
+  { "BLE Spammer",  nullptr, bleSpamSetup,      bleSpamLoop      },
+  { "Flipper Scan", nullptr, flipperSetup,      nullptr          },
+  { "Back",         nullptr, nullptr,           nullptr          }
+};
+constexpr int BLE_MENU_SIZE = sizeof(bleMenu) / sizeof(bleMenu[0]);
+
+MenuItem wifiMenu[] = {
+  { "WiFi Scan",       nullptr, wifiscanSetup,       wifiscanLoop       },
+  { "WiFi Deauther",   nullptr, deauthSetup,         deauthLoop         },
+  { "Deauth Scanner",  nullptr, deauthScannerSetup,  deauthScannerLoop },
+  { "Beacon Spam",     nullptr, beaconSpamSetup,     beaconSpamLoop     },
+  { "WLAN Jammer",     nullptr, jammerSetup,         jammerLoop         },
+  { "Back",            nullptr, nullptr,             nullptr            }
+};
+constexpr int WIFI_MENU_SIZE = sizeof(wifiMenu) / sizeof(wifiMenu[0]);
+
+MenuItem otherMenu[] = {
+  { "Scanner",      nullptr, scannerSetup,    scannerLoop    },
+  { "Analyzer",     nullptr, analyzerSetup,   analyzerLoop   },
+  { "Proto Kill",   nullptr, blackoutSetup,   blackoutLoop   },
+  { "About",        nullptr, about,           about          },
+  { "Setting",      nullptr, settingSetup,    settingLoop    },
+  { "Back",         nullptr, nullptr,         nullptr        }
+};
+constexpr int OTHER_MENU_SIZE = sizeof(otherMenu) / sizeof(otherMenu[0]);
+
+void enterMenu(AppMenuState st) {
+  currentState = st;
+  item_selected = 0;
+  switch (st) {
+    case APP_MAIN:
+      currentMenuItems = mainMenu;
+      currentMenuSize  = MAIN_MENU_SIZE;
+      break;
+    case APP_BLE:
+      currentMenuItems = bleMenu;
+      currentMenuSize  = BLE_MENU_SIZE;
+      break;
+    case APP_WIFI:
+      currentMenuItems = wifiMenu;
+      currentMenuSize  = WIFI_MENU_SIZE;
+      break;
+    case APP_OTHER:
+      currentMenuItems = otherMenu;
+      currentMenuSize  = OTHER_MENU_SIZE;
+      break;
+  }
+}
+
+void runApp(MenuItem &mi) {
+  if (mi.setup) {
+    mi.setup();
+    if (mi.loop) {
+      while (digitalRead(BUTTON_SEL) == LOW);
+      while (true) {
+        mi.loop();
+        if (digitalRead(BUTTON_SEL) == LOW) {
+          while (digitalRead(BUTTON_SEL) == LOW);
+          break;
+        }
       }
+      u8g2.clearBuffer();
     }
-    u8g2.clearBuffer();
   }
 }
 
@@ -152,10 +202,10 @@ void setup() {
   u8g2.print("by jbohack & zr_crackiin");
 
   u8g2.setFont(u8g2_font_6x10_tf); 
-  int16_t versionWidth = u8g2.getUTF8Width("v2.8.0");
+  int16_t versionWidth = u8g2.getUTF8Width("v2.8.1");
   int16_t versionX = (128 - versionWidth) / 2;
   u8g2.setCursor(versionX, 60);
-  u8g2.print("v2.8.0");
+  u8g2.print("v2.8.1");
   
   u8g2.sendBuffer(); 
   delay(1500);
@@ -170,30 +220,58 @@ void setup() {
   pinMode(BUTTON_UP, INPUT_PULLUP);
   pinMode(BUTTON_SEL, INPUT_PULLUP);
   pinMode(BUTTON_DOWN, INPUT_PULLUP);
+
+  enterMenu(APP_MAIN);
 }
 
 void loop() {
-  if (justPressed(BUTTON_UP, upPrev))
-    item_selected = (item_selected + NUM_ITEMS - 1) % NUM_ITEMS;
-  if (justPressed(BUTTON_DOWN, downPrev))
-    item_selected = (item_selected + 1) % NUM_ITEMS;
-  if (justPressed(BUTTON_SEL, selPrev))
-    runApp(item_selected);
+  if (justPressed(BUTTON_UP, upPrev) && item_selected > 0)   item_selected--;
+  if (justPressed(BUTTON_DOWN, downPrev) && item_selected < currentMenuSize - 1) item_selected++;
 
-  u8g2.clearBuffer();
-  u8g2.drawXBMP(0,22,128,21, bitmap_item_sel_outline);
-  static const int yPos[3] = {15,37,59};
-  static const uint8_t *fonts[3] = {u8g_font_7x14, u8g_font_7x14B, u8g_font_7x14};
-
-  for (int i = 0; i < 3; i++) {
-    int idx = (item_selected + (i-1) + NUM_ITEMS) % NUM_ITEMS;
-    u8g2.setFont(fonts[i]);
-    u8g2.drawStr(25, yPos[i], menu[idx].name);
-    int iconY = i==0 ? 2 : (i==1 ? 24 : 46);
-    u8g2.drawXBMP(4, iconY, 16,16, menu[idx].icon);
+  if (justPressed(BUTTON_SEL, selPrev)) {
+    MenuItem &sel = currentMenuItems[item_selected];
+    if (currentState == APP_MAIN) {
+      if (strcmp(sel.name, "BLE")==0) enterMenu(APP_BLE);
+      else if (strcmp(sel.name, "WiFi")==0) enterMenu(APP_WIFI);
+      else if (strcmp(sel.name, "Other")==0) enterMenu(APP_OTHER);
+    } else {
+      if (strcmp(sel.name, "Back")==0) enterMenu(APP_MAIN);
+      else runApp(sel);
+    }
   }
 
-  u8g2.drawXBMP(120,0,8,64, bitmap_scrollbar_background);
-  u8g2.drawBox(125, (64/NUM_ITEMS)*item_selected, 3, 64/NUM_ITEMS);
+  u8g2.clearBuffer();
+  
+  int start;
+  if (item_selected == 0)
+    start = 0;
+  else if (item_selected == currentMenuSize - 1)
+    start = max(0, currentMenuSize - 3);
+  else
+    start = item_selected - 1;
+
+  static const int yPos[3]   = {15, 37, 59};
+  static const int boxY[3]   = { 0, 22, 44};
+  static const uint8_t *fonts[3] = { u8g_font_7x14, u8g_font_7x14B, u8g_font_7x14 };
+
+  int highlight = item_selected - start;
+  u8g2.drawXBMP(0, boxY[highlight], 128, 21, bitmap_item_sel_outline);
+
+  for (int i = 0; i < 3; i++) {
+    int idx = start + i;
+    if (idx < currentMenuSize) {
+      u8g2.setFont(fonts[i]);
+      u8g2.drawStr(25, yPos[i], currentMenuItems[idx].name);
+      if (currentMenuItems[idx].icon) {
+        int iconY = (i == 0 ? 2 : i == 1 ? 24 : 46);
+        u8g2.drawXBMP(4, iconY, 16, 16, currentMenuItems[idx].icon);
+      }
+    }
+  }
+
+  int boxH = 64 / currentMenuSize;
+  u8g2.drawXBMP(120, 0, 8, 64, bitmap_scrollbar_background);
+  u8g2.drawBox(125, boxH * item_selected, 3, boxH);
+
   u8g2.sendBuffer();
 }
