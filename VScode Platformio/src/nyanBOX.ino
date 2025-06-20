@@ -46,6 +46,8 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 Adafruit_NeoPixel pixels(1, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 extern uint8_t oledBrightness;
 
+const char* nyanboxVersion = NYANBOX_VERSION;
+
 unsigned long upLastMillis    = 0;
 unsigned long upNextRepeat    = 0;
 bool         upPressed        = false;
@@ -184,23 +186,28 @@ void setup() {
 
   u8g2.clearBuffer();
 
-  u8g2.setFont(u8g2_font_ncenB14_tr); 
-  int16_t nameWidth = u8g2.getUTF8Width("nyan-BOX"); 
-  int16_t nameX = (128 - nameWidth) / 2;            
-  u8g2.setCursor(nameX, 25);                      
-  u8g2.print("nyan-BOX");
+  u8g2.setFont(u8g2_font_ncenB14_tr);
+  const char* title = "nyan-BOX";
+  int16_t titleW = u8g2.getUTF8Width(title);
+  u8g2.setCursor((128 - titleW) / 2, 16);
+  u8g2.print(title);
+
+  u8g2.setFont(u8g2_font_6x10_tf);
+  const char* url = "nyanBOX.lullaby.cafe";
+  int16_t urlW = u8g2.getUTF8Width(url);
+  u8g2.setCursor((128 - urlW) / 2, 32);
+  u8g2.print(url);
 
   u8g2.setFont(u8g2_font_ncenB08_tr); 
-  int16_t creditWidth = u8g2.getUTF8Width("by jbohack & zr_crackiin");
-  int16_t creditX = (106 - creditWidth) / 2;
-  u8g2.setCursor(creditX, 40);
-  u8g2.print("by jbohack & zr_crackiin");
+  int16_t creditWidth = u8g2.getUTF8Width("jbohack & zr_crackiin");
+  int16_t creditX = (128 - creditWidth) / 2;
+  u8g2.setCursor(creditX, 50);
+  u8g2.print("jbohack & zr_crackiin");
 
-  u8g2.setFont(u8g2_font_6x10_tf); 
-  int16_t versionWidth = u8g2.getUTF8Width("v2.8.5");
-  int16_t versionX = (128 - versionWidth) / 2;
-  u8g2.setCursor(versionX, 60);
-  u8g2.print("v2.8.5");
+  u8g2.setFont(u8g2_font_6x10_tf);
+  int16_t verW = u8g2.getUTF8Width(nyanboxVersion);
+  u8g2.setCursor((128 - verW) / 2, 62);
+  u8g2.print(nyanboxVersion);
   
   u8g2.sendBuffer(); 
   delay(1500);

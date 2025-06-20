@@ -9,6 +9,9 @@
 #include <U8g2lib.h>
 #include "pindefs.h"
 
+#define NYANBOX_VERSION "v2.8.6"
+extern const char* nyanboxVersion;
+
 void aboutSetup();
 void aboutLoop();
 
