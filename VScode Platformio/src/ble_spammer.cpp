@@ -237,7 +237,7 @@ void bleSpamLoop() {
             mode = oldMode;
         }
         advertiseDevice(name);
-        delay(2);
+        delay(5);
     }
     
     u8g2.clearBuffer();
