@@ -58,7 +58,9 @@ void updateLastActivity() {
 bool anyButtonPressed() {
   return digitalRead(BUTTON_PIN_UP)    == LOW ||
         digitalRead(BUTTON_PIN_DOWN)  == LOW ||
-        digitalRead(BUTTON_PIN_CENTER)== LOW;
+        digitalRead(BUTTON_PIN_CENTER)== LOW ||
+        digitalRead(BUTTON_PIN_RIGHT) == LOW ||
+        digitalRead(BUTTON_PIN_LEFT)  == LOW;
 }
 
 void wakeDisplay() {
@@ -262,6 +264,8 @@ void setup() {
   pinMode(BUTTON_PIN_UP, INPUT_PULLUP);
   pinMode(BUTTON_PIN_CENTER, INPUT_PULLUP);
   pinMode(BUTTON_PIN_DOWN, INPUT_PULLUP);
+  pinMode(BUTTON_PIN_RIGHT, INPUT_PULLUP);
+  pinMode(BUTTON_PIN_LEFT, INPUT_PULLUP);
 
   enterMenu(APP_MAIN);
 }
