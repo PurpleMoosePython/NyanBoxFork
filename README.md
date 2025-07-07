@@ -170,3 +170,6 @@ If you find nyanBox useful, please consider supporting the project:
 
 ### Community
 A big thank you to all contributors and community members who have helped improve nyanBOX!
+
+
+#BadgeLife
