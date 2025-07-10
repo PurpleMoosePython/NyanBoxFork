@@ -24,7 +24,7 @@ static Mode currentMode = MODE_MENU;
 static int menuSelection = 0;
 static int apIndex = 0;
 
-const unsigned long SCAN_INTERVAL = 15000;
+const unsigned long SCAN_INTERVAL = 30000;
 const unsigned long DEAUTH_INTERVAL = 5;
 static unsigned long lastScanTime = 0;
 static unsigned long lastDeauthTime = 0;
