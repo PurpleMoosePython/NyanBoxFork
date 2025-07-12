@@ -27,7 +27,7 @@
 #include "../include/sourapple.h"
 #include "../include/blescan.h"
 #include "../include/ble_spammer.h"
-#include "../include/flipper.h"
+#include "../include/flipperzero_detector.h"
 #include "../include/wifiscan.h"
 #include "../include/deauth.h"
 #include "../include/deauth_scanner.h"
@@ -140,13 +140,13 @@ MenuItem wifiMenu[] = {
 constexpr int WIFI_MENU_SIZE = sizeof(wifiMenu) / sizeof(wifiMenu[0]);
 
 MenuItem bleMenu[] = {
-  { "BLE Scan",     nullptr, blescanSetup,      blescanLoop      },
-  { "Flipper Scan", nullptr, flipperSetup,      nullptr          },
-  { "BLE Spammer",  nullptr, bleSpamSetup,      bleSpamLoop      },
-  { "BLE Jammer",   nullptr, blejammerSetup,    blejammerLoop    },
-  { "Sour Apple",   nullptr, sourappleSetup,    sourappleLoop    },
-  { "BLE Spoofer",  nullptr, spooferSetup,      spooferLoop      },
-  { "Back",         nullptr, nullptr,           nullptr          }
+  { "BLE Scan",     nullptr, blescanSetup,             blescanLoop      },
+  { "Flipper Scan", nullptr, flipperZeroDetectorSetup, flipperZeroDetectorLoop },
+  { "BLE Spammer",  nullptr, bleSpamSetup,             bleSpamLoop      },
+  { "BLE Jammer",   nullptr, blejammerSetup,           blejammerLoop    },
+  { "Sour Apple",   nullptr, sourappleSetup,           sourappleLoop    },
+  { "BLE Spoofer",  nullptr, spooferSetup,             spooferLoop      },
+  { "Back",         nullptr, nullptr,                  nullptr          }
 };
 constexpr int BLE_MENU_SIZE = sizeof(bleMenu) / sizeof(bleMenu[0]);
 
@@ -201,6 +201,9 @@ void runApp(MenuItem &mi) {
       while (digitalRead(BUTTON_SEL) == LOW);
       if (mi.setup == blescanSetup) {
         blescanExit();
+      }
+      if (mi.setup == flipperZeroDetectorSetup) {
+        flipperZeroDetectorExit();
       }
       if (mi.setup == blackoutSetup || mi.setup == jammerSetup || mi.setup == blejammerSetup) {
         for (auto &r : radios) r.powerDown();

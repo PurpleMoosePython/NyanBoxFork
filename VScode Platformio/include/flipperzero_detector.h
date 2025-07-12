@@ -6,17 +6,13 @@
 #ifndef flipper_H
 #define flipper_H
 
-#include <SPI.h>
-#include <Wire.h>
-#include <U8g2lib.h>
 #include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEScan.h>
-#include <BLEAdvertisedDevice.h>
+#include <U8g2lib.h>
 #include "neopixel.h"
-#include "esp_bt.h"
-#include "esp_wifi.h"
+#include "pindefs.h"
 
-void flipperSetup();
+void flipperZeroDetectorSetup();
+void flipperZeroDetectorLoop();
+void flipperZeroDetectorExit();
 
 #endif
