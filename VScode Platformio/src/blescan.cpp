@@ -38,6 +38,14 @@ const unsigned long scanInterval = 180000;
 
 class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice advertisedDevice) override {
+    if (bleDevices.size() >= MAX_DEVICES) {
+      if (isScanning) {
+        pBLEScan->stop();
+        isScanning = false;
+      }
+      return;
+    }
+
     std::string nameStd = advertisedDevice.getName();
     const char *deviceName = nameStd.c_str();
     std::string addrStd = advertisedDevice.getAddress().toString();
@@ -56,10 +64,6 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
         }
         return;
       }
-    }
-
-    if (bleDevices.size() >= MAX_DEVICES) {
-      bleDevices.erase(bleDevices.begin());
     }
 
     BLEDeviceData newDev;
@@ -190,7 +194,9 @@ void blescanLoop() {
     u8g2.drawStr(0, 60, "Press LEFT to go back");
   } else {
     u8g2.setFont(u8g2_font_6x10_tr);
-    u8g2.drawStr(0, 10, "BLE Devices:");
+    char header[32];
+    snprintf(header, sizeof(header), "BLE Devices: %d/%d", (int)bleDevices.size(), MAX_DEVICES);
+    u8g2.drawStr(0, 10, header);
     for (int i = 0; i < 5; ++i) {
       int idx = listStartIndex + i;
       if (idx >= (int)bleDevices.size())
