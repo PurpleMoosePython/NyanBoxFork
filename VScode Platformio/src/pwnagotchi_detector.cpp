@@ -167,7 +167,7 @@ void pwnagotchiDetectorLoop() {
     u8g2.drawStr(0, 20, ("Ver:  " + e.version).c_str());
     u8g2.drawStr(0, 30, ("Pwnd: " + String(e.pwnd)).c_str());
     u8g2.drawStr(0, 40, ("Deauth: " + String(e.deauth ? "Yes" : "No")).c_str());
-    u8g2.drawStr(0, 50, ("Uptime: " + String(e.uptime)).c_str());
+    u8g2.drawStr(0, 50, ("Uptime: " + String(e.uptime / 60) + "m").c_str());
     u8g2.drawStr(0, 60, ("Press LEFT to go back"));
   } else {
     u8g2.drawStr(0, 10, "Pwnagotchi list:");
