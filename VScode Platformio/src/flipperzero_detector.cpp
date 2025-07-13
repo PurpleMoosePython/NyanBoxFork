@@ -42,6 +42,14 @@ const unsigned long scanInterval = 30000;
 
 class MyFlipperAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice advertisedDevice) override {
+    if (flipperZeroDevices.size() >= MAX_DEVICES) {
+      if (isScanning) {
+        pBLEScan->stop();
+        isScanning = false;
+      }
+      return;
+    }
+
     std::string nameStd = advertisedDevice.getName();
     const char *deviceName = nameStd.c_str();
     std::string addrStd = advertisedDevice.getAddress().toString();
@@ -68,10 +76,6 @@ class MyFlipperAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
 
     if (!isFlipperZero) {
       return;
-    }
-
-    if (flipperZeroDevices.size() >= MAX_DEVICES) {
-      flipperZeroDevices.erase(flipperZeroDevices.begin());
     }
 
     FlipperZeroDeviceData newDev;
@@ -138,6 +142,22 @@ void flipperZeroDetectorLoop() {
     isScanning = false;
     lastScanTime = now;
   } else if (!isScanning && now - lastScanTime > scanInterval) {
+    if (flipperZeroDevices.size() >= MAX_DEVICES) {
+      std::sort(flipperZeroDevices.begin(), flipperZeroDevices.end(),
+                [](const FlipperZeroDeviceData &a, const FlipperZeroDeviceData &b) {
+                  if (a.lastSeen != b.lastSeen) {
+                    return a.lastSeen < b.lastSeen;
+                  }
+                  return a.rssi < b.rssi;
+                });
+      
+      int devicesToRemove = MAX_DEVICES / 4;
+      if (devicesToRemove > 0) {
+        flipperZeroDevices.erase(flipperZeroDevices.begin(), 
+                                flipperZeroDevices.begin() + devicesToRemove);
+      }
+    }
+    
     pBLEScan->start(5, false);
     isScanning = true;
     lastScanTime = now;
@@ -207,8 +227,8 @@ void flipperZeroDetectorLoop() {
   } else {
     u8g2.setFont(u8g2_font_6x10_tr);
     char header[32];
-    snprintf(header, sizeof(header), "Flippers: %d",
-             (int)flipperZeroDevices.size());
+    snprintf(header, sizeof(header), "Flippers: %d/%d",
+             (int)flipperZeroDevices.size(), MAX_DEVICES);
     u8g2.drawStr(0, 10, header);
 
     for (int i = 0; i < 5; ++i) {
