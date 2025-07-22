@@ -32,7 +32,9 @@ bool isDetailView = false;
 unsigned long lastButtonPress = 0;
 const unsigned long debounceTime = 200;
 
-static uint8_t pwnChannel = 1;
+static const uint8_t channels[] = {1, 6, 11};
+static const int numChannels = sizeof(channels) / sizeof(channels[0]);
+static int currentChannelIndex = 0;
 static uint32_t lastHop = 0;
 
 void IRAM_ATTR pwnagotchiSnifferCallback(void *buf, wifi_promiscuous_pkt_type_t type) {
@@ -120,16 +122,16 @@ void pwnagotchiDetectorSetup() {
   esp_wifi_set_promiscuous_filter(&flt);
   esp_wifi_set_promiscuous(true);
 
-  esp_wifi_set_channel(pwnChannel, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_channel(channels[currentChannelIndex], WIFI_SECOND_CHAN_NONE);
   lastHop = millis();
 }
 
 void pwnagotchiDetectorLoop() {
   unsigned long now = millis();
 
-  if (now - lastHop > 2000) {
-    pwnChannel = (pwnChannel % 13) + 1;
-    esp_wifi_set_channel(pwnChannel, WIFI_SECOND_CHAN_NONE);
+  if (now - lastHop > 1000) {
+    currentChannelIndex = (currentChannelIndex + 1) % numChannels;
+    esp_wifi_set_channel(channels[currentChannelIndex], WIFI_SECOND_CHAN_NONE);
     lastHop = now;
   }
 
