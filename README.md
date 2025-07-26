@@ -48,7 +48,7 @@ nyanBOX is a wireless toolkit designed to explore, analyze, and interact with va
 The device combines the ESP32 Wroom32U, NRF24 modules, an OLED display, and other components to create a multifunctional device that can act as a scanner, analyzer, jammer, BLE jammer, BLE spoofer, and perform advanced tasks such as the "Sour Apple" attack.
 
 <div align="center">
-  <img src="https://github.com/user-attachments/assets/4bbf6b7f-f413-4a68-825e-c39e9e3ec596" alt="nyanBOX Interface" width="650" />
+  <img src="https://github.com/user-attachments/assets/530e5686-09db-4f02-aabe-80a8abcbb036" alt="nyanBOX Interface" width="650" />
 </div>
 
 
