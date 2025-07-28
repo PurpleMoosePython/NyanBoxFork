@@ -3,7 +3,6 @@
    https://github.com/jbohack/nyanBOX
    ________________________________________ */
 
-#include <EEPROM.h> // Include EEPROM library
 #include <Arduino.h> 
 #include "../include/scanner.h"
 #include "../include/sleep_manager.h"
@@ -28,12 +27,7 @@ char grey[] = " .:-=+*aRW";
 #define _NRF24_RF_SETUP    0x06
 #define _NRF24_RPD         0x09
 
-#define EEPROM_ADDRESS_SENSOR_ARRAY 2 
-
 byte sensorArray[129];
-
-unsigned long lastSaveTime = 0; 
-const unsigned long saveInterval = 5000; 
 
 byte getRegister(byte r) {
   byte c;
@@ -96,7 +90,6 @@ void scanChannels(void) {
   }
 }
 
-
 void outputChannels(void) {
   int norm = 0;
 
@@ -147,23 +140,6 @@ void outputChannels(void) {
   u8g2.sendBuffer();
 }
 
-void loadPreviousGraph() {
-  EEPROM.begin(128); 
-  for (byte i = 0; i < 128; i++) {
-    sensorArray[i] = EEPROM.read(EEPROM_ADDRESS_SENSOR_ARRAY + i);
-  }
-  EEPROM.end(); 
-}
-
-void saveGraphToEEPROM() {
-  EEPROM.begin(128); 
-  for (byte i = 0; i < 128; i++) {
-    EEPROM.write(EEPROM_ADDRESS_SENSOR_ARRAY + i, sensorArray[i]);
-  }
-  EEPROM.commit(); 
-  EEPROM.end();    
-}
-
 void scannerSetup() {
   Serial.begin(115200);
 
@@ -189,16 +165,10 @@ void scannerSetup() {
   setRegister(_NRF24_EN_AA, 0x0);
   setRegister(_NRF24_RF_SETUP, 0x0F);
 
-  loadPreviousGraph();
 }
 
 void scannerLoop() {
   scanChannels();
   outputChannels();
 
-  // Save the graph to EEPROM every 5 seconds
-  if (millis() - lastSaveTime > saveInterval) {
-    saveGraphToEEPROM();
-    lastSaveTime = millis();
-  }
 }
