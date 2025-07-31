@@ -42,6 +42,7 @@
 #include "../include/level_system.h"
 #include "../include/nyanbox_detector.h"
 #include "../include/nyanbox_advertiser.h"
+#include "../include/evil_portal.h"
 
 RF24 radios[] = {
   RF24(RADIO_CE_PIN_1, RADIO_CSN_PIN_1),
@@ -204,6 +205,7 @@ void updateAppXP() {
                strstr(currentAppName, "Spam") != nullptr ||
                strstr(currentAppName, "Sour Apple") != nullptr ||
                strstr(currentAppName, "Spoofer") != nullptr ||
+               strstr(currentAppName, "Evil Portal") != nullptr ||
                strstr(currentAppName, "Proto Kill") != nullptr) {
       xpAmount = 4;
     } else if (strstr(currentAppName, "Setting") != nullptr ||
@@ -254,6 +256,7 @@ MenuItem wifiMenu[] = {
   { "WiFi Deauther",   nullptr, deauthSetup,             deauthLoop,             cleanupWiFi },
   { "Deauth Scanner",  nullptr, deauthScannerSetup,      deauthScannerLoop,      cleanupWiFi },
   { "Beacon Spam",     nullptr, beaconSpamSetup,         beaconSpamLoop,         cleanupWiFi },
+  { "Evil Portal",     nullptr, evilPortalSetup,         evilPortalLoop,         cleanupWiFi },
   { "WLAN Jammer",     nullptr, jammerSetup,             jammerLoop,             cleanupRadio },
   { "Pwnagotchi Detector", nullptr, pwnagotchiDetectorSetup, pwnagotchiDetectorLoop, cleanupWiFi },
   { "Pwnagotchi Spam", nullptr, pwnagotchiSpamSetup,     pwnagotchiSpamLoop,     cleanupWiFi },
