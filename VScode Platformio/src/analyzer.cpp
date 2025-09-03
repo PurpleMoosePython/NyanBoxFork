@@ -77,14 +77,12 @@ void ScanChannels(void) {
   DIsable();
  // for (int j = 0; j < 10; j++) {
     for (int i = 0; i < CHANNELS; i++) {
-      setNeoPixelColour("purple");
       setregister(NRF24_RF_CH, (128 * i) / CHANNELS);
       setrx();
       delayMicroseconds(40);
       DIsable();
       if (getregister(NRF24_RPD) > 0) CHannel[i]++;
     }
-    setNeoPixelColour("0");
  // }
 }
 

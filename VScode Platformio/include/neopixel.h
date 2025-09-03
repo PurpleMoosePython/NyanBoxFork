@@ -6,15 +6,13 @@
 #define NEOPIXEL_H
 
 #include <Adafruit_NeoPixel.h>
-#include <vector>
-#include <string>
 
 extern Adafruit_NeoPixel pixels;
 
 void neopixelSetup();
 void neopixelLoop();
 
-void setNeoPixelColour(const std::string& colour);
-void flash(int numberOfFlashes, const std::vector<std::string>& colors, const std::string& finalColour);
+void pulseColor(uint8_t r, uint8_t g, uint8_t b);
+void stopPulsing();
 
 #endif // NEOPIXEL_H

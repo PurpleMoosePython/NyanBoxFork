@@ -11,6 +11,7 @@
 #include "neopixel.h"
 #include "pindefs.h"
 #include <Arduino.h>
+#include <vector>
 
 void wifiscanSetup();
 void wifiscanLoop();

@@ -126,10 +126,8 @@ void outputChannels(void) {
   // Draw the graph moving right-to-left
   for (byte count = 0; count < 127; count++) {
     u8g2.drawLine(127 - count, 63, 127 - count, 63 - sensorArray[count]);
-    setNeoPixelColour("purple");
   }
   
-  setNeoPixelColour("0");
 
   u8g2.setFont(u8g2_font_ncenB08_tr);
   u8g2.setCursor(12, 12);

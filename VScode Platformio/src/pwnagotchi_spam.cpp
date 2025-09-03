@@ -233,7 +233,6 @@ void pwnagotchiSpamLoop() {
         currentChannel = (currentChannel + 1) % numChannels;
         lastBeacon = now;
         
-        setNeoPixelColour(spamActive ? "red" : "0");
     }
 
     u8g2.clearBuffer();

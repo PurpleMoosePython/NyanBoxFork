@@ -257,13 +257,11 @@ void jammerLoop() {
     const char* status = "ACTIVE";
     int statusWidth = u8g2.getUTF8Width(status);
     u8g2.drawStr((128 - statusWidth) / 2, 26, status);
-    setNeoPixelColour("red");
     jammer();
   } else {
     const char* status = "STOPPED";
     int statusWidth = u8g2.getUTF8Width(status);
     u8g2.drawStr((128 - statusWidth) / 2, 26, status);
-    setNeoPixelColour("0");
   }
   
   u8g2.setFont(u8g2_font_helvR08_tr);

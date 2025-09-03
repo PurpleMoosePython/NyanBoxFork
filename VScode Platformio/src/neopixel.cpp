@@ -17,48 +17,60 @@ void neopixelSetup() {
  if (neoPixelActive) {
   pixels.begin();
   pixels.clear();
-  //pixels.show();
-  }
-}
-
-void neopixelLoop();
-
-void setNeoPixelColour(const std::string& colour) {
-  uint32_t colorValue = 0; 
-
-  if (colour == "red") {
-    colorValue = pixels.Color(5, 0, 0);
-  } else if (colour == "green") {
-    colorValue = pixels.Color(0, 5, 0);
-  } else if (colour == "blue") {
-    colorValue = pixels.Color(0, 0, 5);
-  } else if (colour == "yellow") {
-    colorValue = pixels.Color(5, 5, 0);
-  } else if (colour == "purple") {
-    colorValue = pixels.Color(5, 0, 5);
-  } else if (colour == "cyan") {
-    colorValue = pixels.Color(0, 5, 5);
-  } else if (colour == "white") {
-    colorValue = pixels.Color(5, 5, 5);
-  } else if (colour == "null") {
-    colorValue = pixels.Color(0, 0, 0);
-  }
-
-  pixels.setPixelColor(0, colorValue);
   pixels.show();
+  }
 }
 
-void flash(int numberOfFlashes, const std::vector<std::string>& colors, const std::string& finalColour) {
-  if (numberOfFlashes <= 0 || colors.empty()) {
-    Serial.println("Invalid parameters for flash: Check numberOfFlashes or colors vector.");
-    return;
-  }
+static bool isPulsing = false;
+static uint8_t baseRed = 0;
+static uint8_t baseGreen = 0;
+static uint8_t baseBlue = 0;
+static unsigned long lastPulseTime = 0;
+static int pulseDirection = 1;
+static int brightness = 0;
+const int pulseSpeed = 35;
 
-  for (int i = 0; i < numberOfFlashes; ++i) {
-    for (const auto& color : colors) {
-      setNeoPixelColour(color);
-      delay(500);
-    }
+void pulseColor(uint8_t r, uint8_t g, uint8_t b) {
+  if (!neoPixelActive) return;
+  
+  isPulsing = true;
+  baseRed = r;
+  baseGreen = g;
+  baseBlue = b;
+  brightness = 0;
+  pulseDirection = 1;
+}
+
+void stopPulsing() {
+  isPulsing = false;
+  if (neoPixelActive) {
+    pixels.setPixelColor(0, 0, 0, 0);
+    pixels.show();
   }
-  setNeoPixelColour(finalColour);
+}
+
+void neopixelLoop() {
+  if (!neoPixelActive || !isPulsing) return;
+  
+  unsigned long now = millis();
+  if (now - lastPulseTime >= pulseSpeed) {
+    lastPulseTime = now;
+    
+    brightness += pulseDirection * 2;
+    
+    if (brightness >= 100) {
+      brightness = 100;
+      pulseDirection = -1;
+    } else if (brightness <= 0) {
+      brightness = 0;
+      pulseDirection = 1;
+    }
+    
+    uint8_t r = (baseRed * brightness) / 100;
+    uint8_t g = (baseGreen * brightness) / 100;
+    uint8_t b = (baseBlue * brightness) / 100;
+    
+    pixels.setPixelColor(0, pixels.Color(r, g, b));
+    pixels.show();
+  }
 }

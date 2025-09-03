@@ -123,6 +123,39 @@ struct MenuItem {
   void (*cleanup)();
 };
 
+int getXPAmount(const char* appName) {
+  if (isReconApp(appName)) {
+    return 3;
+  } else if (isOffensiveApp(appName)) {
+    return 4;
+  } else if (isUtilityApp(appName)) {
+    return 2;
+  } else {
+    return 0;
+  }
+}
+
+bool isReconApp(const char* appName) {
+  return strstr(appName, "Scan") != nullptr || 
+         strstr(appName, "Detector") != nullptr ||
+         strstr(appName, "Analyzer") != nullptr;
+}
+
+bool isOffensiveApp(const char* appName) {
+  return strstr(appName, "Jammer") != nullptr || 
+         strstr(appName, "Deauth") != nullptr ||
+         strstr(appName, "Spam") != nullptr ||
+         strstr(appName, "Sour Apple") != nullptr ||
+         strstr(appName, "Spoofer") != nullptr ||
+         strstr(appName, "Evil Portal") != nullptr ||
+         strstr(appName, "Proto Kill") != nullptr;
+}
+
+bool isUtilityApp(const char* appName) {
+  return strstr(appName, "Setting") != nullptr ||
+         strstr(appName, "About") != nullptr;
+}
+
 AppMenuState currentState = APP_MAIN;
 MenuItem*    currentMenuItems = nullptr;
 int          currentMenuSize  = 0;
@@ -142,6 +175,7 @@ static unsigned long lastXPReward = 0;
 static unsigned long pausedTime = 0;
 static bool xpPaused = false;
 static const char* currentAppName = "";
+static int currentXPAmount = 0;
 static bool inApplication = false;
 static int pendingXP = 0;
 const unsigned long XP_REWARD_INTERVAL = 60000;
@@ -155,6 +189,7 @@ bool justPressed(uint8_t pin, bool &prev) {
 
 void startAppTracking(const char* appName) {
   currentAppName = appName;
+  currentXPAmount = getXPAmount(appName);
   appStartTime = millis();
   lastXPReward = appStartTime;
   xpPaused = false;
@@ -178,6 +213,7 @@ void stopAppTracking() {
     
     inApplication = false;
     currentAppName = "";
+    currentXPAmount = 0;
     xpPaused = false;
   }
 }
@@ -194,26 +230,11 @@ void updateAppXP() {
   }
   
   if (!displayOff && millis() - lastXPReward >= XP_REWARD_INTERVAL) {
-    int xpAmount = 2;
+    int xpAmount = 0;
     
-    if (strstr(currentAppName, "Scan") != nullptr || 
-        strstr(currentAppName, "Detector") != nullptr ||
-        strstr(currentAppName, "Analyzer") != nullptr) {
-      xpAmount = 3;
-    } else if (strstr(currentAppName, "Jammer") != nullptr || 
-               strstr(currentAppName, "Deauth") != nullptr ||
-               strstr(currentAppName, "Spam") != nullptr ||
-               strstr(currentAppName, "Sour Apple") != nullptr ||
-               strstr(currentAppName, "Spoofer") != nullptr ||
-               strstr(currentAppName, "Evil Portal") != nullptr ||
-               strstr(currentAppName, "Proto Kill") != nullptr) {
-      xpAmount = 4;
-    } else if (strstr(currentAppName, "Setting") != nullptr ||
-               strstr(currentAppName, "About") != nullptr) {
-      xpAmount = 2;
+    if (currentXPAmount > 0) {
+      pendingXP += currentXPAmount;
     }
-    
-    pendingXP += xpAmount;
     lastXPReward = millis();
   }
 }
@@ -321,6 +342,12 @@ void runApp(MenuItem &mi) {
   
   startAppTracking(mi.name);
   
+  if (isReconApp(mi.name)) {
+    pulseColor(0, 0, 255);  // Blue
+  } else if (isOffensiveApp(mi.name)) {
+    pulseColor(25, 21, 22); // Pink
+  }
+  
   mi.setup();
   updateLastActivity();
   displayOff = false;
@@ -332,6 +359,7 @@ void runApp(MenuItem &mi) {
   while (true) {
     checkIdle();
     updateAppXP();
+    neopixelLoop();
     mi.loop();
     if (digitalRead(BUTTON_SEL) == LOW) {
       updateLastActivity();
@@ -345,6 +373,7 @@ void runApp(MenuItem &mi) {
     }
   }
 
+  stopPulsing();
   stopAppTracking();
   u8g2.clearBuffer();
 }
@@ -419,6 +448,7 @@ void setup() {
 void loop() {
   checkIdle();
   updateAppXP();
+  neopixelLoop();
   updateNyanboxAdvertiser();
 
   bool upNow = (digitalRead(BUTTON_PIN_UP) == LOW);
