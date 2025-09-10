@@ -361,7 +361,7 @@ void beaconSpamLoop() {
         u8g2.sendBuffer();
       }
       {
-        static const int batchSize = 5;
+        static const int batchSize = 10;
         static int batchIndices[batchSize] = {0};
         static int batchCycle = 0;
         static int batchBeacon = 0;
@@ -449,7 +449,7 @@ void beaconSpamLoop() {
         static uint8_t randomBatchesSinceSwitch = 0;
         
         if (currentTime - lastRandom >= 50) {
-          for (int b = 0; b < 5; b++) {
+          for (int b = 0; b < 10; b++) {
             String randomSSID = "";
             int length = random(5, 33);
             const char chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
