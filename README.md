@@ -23,8 +23,8 @@
 
   <p>
     <a href="https://nyandevices.com">Website</a> ·
-    <a href="https://discord.gg/J5A3zDC2y8">Discord</a> ·
-    <a href="https://github.com/cifertech/nrfbox">Original Project</a>
+    <a href="https://shop.nyandevices.com">Shop</a> ·
+    <a href="https://discord.gg/J5A3zDC2y8">Discord</a>
   </p>
 </div>
 
@@ -103,43 +103,45 @@ Hit RIGHT in the main menu to check your stats. Level up by tinkering with RF si
 
 ---
 
-## 🔧 Prerequisites
+## 📱 Official Firmware Flashing
 
-### USB Drivers
-Install the required USB drivers for your ESP32 board:
-- **CP210x-based boards**: [CP210x USB to UART Bridge VCP Drivers](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers)
-- **CH340/CH341-based boards**: [CH340 Drivers](https://www.wch.cn/download/CH341SER_EXE.html)
-
----
-## 🚀 Development Setup
+For nyanBOX devices purchased from [shop.nyandevices.com](https://shop.nyandevices.com), follow the official flashing process:
 
 ### Prerequisites
-- [Visual Studio Code](https://code.visualstudio.com/)
-- [PlatformIO IDE](https://platformio.org/install/ide?install=vscode) extension
+Install the USB drivers for your operating system:
 
-### Getting Started
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/jbohack/nyanBOX.git
-   ```
-2. Open the project in VS Code:
-   - Select `File > Open Folder`
-   - Choose the nyanBOX directory
+**Windows:**
+- Download and install [CP210x USB to UART Bridge VCP Drivers](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers)
 
-### Configuration
-- Pre-configured for ESP32-DevKitC in `platformio.ini`
-- For other ESP32 boards, update the `board` parameter in `platformio.ini`
+**macOS:**
+- Drivers are usually included with macOS. If you experience issues, install the CP210x drivers above.
 
-### Build and Upload
-1. **Build**: Click the checkmark icon in the status bar
-2. **Connect**: Plug in your ESP32 via USB
-3. **Upload**: Click the right-arrow icon
-4. **Monitor**: Click the plug icon to open the serial monitor
+**Linux:**
+- Most distributions include the drivers by default. If needed, install `cp210x` kernel module.
 
-### Troubleshooting
-- **Upload Failing?** Try holding the BOOT button during upload
-- **Connection Issues?** Verify the correct COM port is selected
-- **Driver Problems?** Ensure proper USB drivers are installed (see Prerequisites)
+### Official Flashing Process
+
+1. **Install PlatformIO & Visual Studio Code**
+   - Download and install [Visual Studio Code](https://code.visualstudio.com/)
+   - Install the [PlatformIO IDE](https://platformio.org/install/ide?install=vscode) extension
+
+2. **Get the Firmware**
+   - Download this repository from [GitHub](https://github.com/jbohack/nyanBOX) (click the green "Code" button, then "Download ZIP")
+   - Extract the ZIP file to a folder on your computer
+   - Open VS Code and select `File > Open Folder`
+   - Choose the extracted nyanBOX folder (specifically the folder with the `platformio.ini` file)
+
+3. **Flash Your Device**
+   - Connect your nyanBOX via a data transfer USB-C cable
+   - In VS Code with PlatformIO:
+     - Click the PlatformIO icon in the sidebar
+     - Select "Upload" (or click the right-arrow → icon in the status bar)
+   - The firmware will automatically build and flash to your device
+   
+   - **Note:** If you have multiple serial devices connected, you may need to modify the `platformio.ini` file to specify `upload_port = portName` (e.g., `upload_port = COM3` on Windows or `upload_port = /dev/ttyUSB0` on Linux)
+   - **Can't find COM port?** Check Device Manager (Windows) or `ls /dev/tty*` (Linux/macOS)
+   - **Upload failing?** Try holding the BOOT button during the flash process
+   - **Still having issues?** Join our [Discord](https://discord.gg/J5A3zDC2y8) for support
 
 ---
 
