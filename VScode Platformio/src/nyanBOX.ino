@@ -398,9 +398,9 @@ void runApp(MenuItem &mi) {
   startAppTracking(mi.name);
 
   if (isReconApp(mi.name)) {
-    pulseColor(0, 0, 255);  // Blue
+    blinkColor(0, 0, 255);  // Blue
   } else if (isOffensiveApp(mi.name)) {
-    pulseColor(25, 21, 22); // Pink
+    blinkColor(25, 21, 22); // Pink
   }
 
   mi.setup();
@@ -428,7 +428,7 @@ void runApp(MenuItem &mi) {
     }
   }
 
-  stopPulsing();
+  stopBlinking();
   stopAppTracking();
   u8g2.clearBuffer();
 }

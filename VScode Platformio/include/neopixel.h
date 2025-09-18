@@ -12,7 +12,7 @@ extern Adafruit_NeoPixel pixels;
 void neopixelSetup();
 void neopixelLoop();
 
-void pulseColor(uint8_t r, uint8_t g, uint8_t b);
-void stopPulsing();
+void blinkColor(uint8_t r, uint8_t g, uint8_t b);
+void stopBlinking();
 
 #endif // NEOPIXEL_H
