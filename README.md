@@ -137,6 +137,7 @@ Install the USB drivers for your operating system:
    - Connect your nyanBOX via a data transfer USB-C cable
    - In VS Code with PlatformIO:
      - Click the PlatformIO icon in the sidebar
+     - Select the `nyanbox-main` environment for normal firmware flashing
      - Select "Upload" (or click the right-arrow → icon in the status bar)
    - The firmware will automatically build and flash to your device
    
