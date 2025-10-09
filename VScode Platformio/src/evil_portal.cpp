@@ -418,9 +418,7 @@ void evilPortalLoop() {
     bool downNow = digitalRead(BUTTON_PIN_DOWN) == LOW;
     bool rightNow = digitalRead(BUTTON_PIN_RIGHT) == LOW;
     bool leftNow = digitalRead(BUTTON_PIN_LEFT) == LOW;
-    if (upNow || downNow || rightNow || leftNow) {
-        updateLastActivity();
-    }
+
     switch (currentState) {
         case PORTAL_MENU:
             if (upNow && !upPressed) {

@@ -169,7 +169,6 @@ void blackoutLoop() {
   unsigned long now = millis();
   bool vLeft = digitalRead(BACK_BTN);
   if (!vLeft && prevLeft && now - lastLeft > debounceDelay) {
-    updateLastActivity();
     current_Mode = static_cast<OperationMode>((current_Mode == 0) ? 7 : (current_Mode - 1));
     update_OLED();
     lastLeft = now;
@@ -178,7 +177,6 @@ void blackoutLoop() {
 
   bool vNext = digitalRead(NEXT_BTN);
   if (!vNext && prevRight && now - lastRight > debounceDelay) {
-    updateLastActivity();
     current_Mode = static_cast<OperationMode>((current_Mode + 1) % 8);
     update_OLED();
     lastRight = now;
@@ -187,7 +185,6 @@ void blackoutLoop() {
 
   bool vUp = digitalRead(TOGGLE_BTN);
   if (!vUp && prevUp && now - lastUp > debounceDelay) {
-    updateLastActivity();
     if (current == DEACTIVE_MODE) {
       current = ACTIVE_MODE;
     } else {

@@ -140,23 +140,19 @@ void pwnagotchiDetectorLoop() {
       --currentIndex;
       if (currentIndex < listStartIndex)
         --listStartIndex;
-      updateLastActivity();
       lastButtonPress = now;
     } else if (!isDetailView && digitalRead(BTN_DOWN) == LOW &&
                currentIndex < (int)pwnagotchi.size() - 1) {
       ++currentIndex;
       if (currentIndex >= listStartIndex + 5)
         ++listStartIndex;
-      updateLastActivity();
       lastButtonPress = now;
     } else if (!isDetailView && digitalRead(BTN_SELECT) == LOW) {
       isDetailView = true;
-      updateLastActivity();
       lastButtonPress = now;
     } else if (digitalRead(BTN_BACK) == LOW) {
       if (isDetailView)
         isDetailView = false;
-      updateLastActivity();
       lastButtonPress = now;
     }
   }

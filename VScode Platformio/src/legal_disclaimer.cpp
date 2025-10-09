@@ -28,10 +28,6 @@ bool showLegalDisclaimer() {
     bool right = !digitalRead(BUTTON_PIN_RIGHT);
     bool left = !digitalRead(BUTTON_PIN_LEFT);
 
-    if (up || down || right || left) {
-      updateLastActivity();
-    }
-
     u8g2.clearBuffer();
 
     if (page == 0) {

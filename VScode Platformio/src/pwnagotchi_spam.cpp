@@ -194,13 +194,11 @@ void pwnagotchiSpamLoop() {
     
     if (digitalRead(BUTTON_PIN_UP) == LOW) {
         spamActive = !spamActive;
-        updateLastActivity();
         delay(200);
     }
     
     if (digitalRead(BUTTON_PIN_DOWN) == LOW) {
         currentMode = static_cast<SpamMode>((currentMode + 1) % 3);
-        updateLastActivity();
         delay(200);
     }
 

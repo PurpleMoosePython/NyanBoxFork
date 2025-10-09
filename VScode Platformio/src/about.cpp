@@ -47,7 +47,6 @@ void aboutLoop() {
   };
   for (auto pin : arrows) {
     if (digitalRead(pin) == LOW) {
-      updateLastActivity();
       if (pin == konamiSequence[konamiIndex]) {
         konamiIndex++;
         if (konamiIndex == KONAMI_LENGTH) {

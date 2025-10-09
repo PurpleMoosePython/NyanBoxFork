@@ -180,7 +180,6 @@ void deauthScannerLoop() {
         
         esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
         deauthCount = 0;
-        updateLastActivity();
         delay(200);
     }
     

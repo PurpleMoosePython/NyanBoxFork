@@ -11,5 +11,6 @@ extern void updateLastActivity();
 extern void checkIdle();
 extern void wakeDisplay();
 extern bool anyButtonPressed();
+extern void updateSleepTimeout(unsigned long newTimeout);
 
 #endif

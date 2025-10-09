@@ -159,23 +159,19 @@ void wifiscanLoop() {
       --currentIndex;
       if (currentIndex < listStartIndex)
         --listStartIndex;
-      updateLastActivity();
       lastButtonPress = now;
     } else if (!isDetailView && digitalRead(BTN_DOWN) == LOW &&
                currentIndex < (int)wifiNetworks.size() - 1) {
       ++currentIndex;
       if (currentIndex >= listStartIndex + 5)
         ++listStartIndex;
-      updateLastActivity();
       lastButtonPress = now;
     } else if (!isDetailView && digitalRead(BTN_RIGHT) == LOW &&
                !wifiNetworks.empty()) {
       isDetailView = true;
-      updateLastActivity();
       lastButtonPress = now;
     } else if (digitalRead(BTN_BACK) == LOW) {
       isDetailView = false;
-      updateLastActivity();
       lastButtonPress = now;
     }
   }

@@ -123,7 +123,6 @@ void blejammerLoop() {
   unsigned long now = millis();
   if (!btn && prevBtn && now - lastBtnTime > debounceDelay) {
     currentMode = static_cast<OperationMode>((currentMode + 1) % 3);
-    updateLastActivity();
     initializeRadios();
     updateOLED();
     lastBtnTime = now;

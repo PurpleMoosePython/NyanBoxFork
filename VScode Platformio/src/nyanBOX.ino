@@ -68,12 +68,17 @@ struct MenuItem {
 bool dangerousActionsEnabled = false;
 
 const char* nyanboxVersion = NYANBOX_VERSION;
-const unsigned long idleTimeout = 120000;
+unsigned long idleTimeout = 120000;
 static unsigned long lastActivity = 0;
 static bool displayOff = false;
+const unsigned long MAX_XP_IDLE_TIME = 120000;
 
 void updateLastActivity() {
   lastActivity = millis();
+}
+
+void updateSleepTimeout(unsigned long newTimeout) {
+  idleTimeout = newTimeout;
 }
 
 bool anyButtonPressed() {
@@ -84,6 +89,18 @@ bool anyButtonPressed() {
         digitalRead(BUTTON_PIN_LEFT)  == LOW;
 }
 
+
+void loadSleepTimeoutFromEEPROM() {
+  uint8_t sleepTimeoutValue = EEPROM.read(3);
+  const unsigned long sleepTimeouts[] = {15, 30, 60, 120, 300, 900, 1800, 0};
+  if (sleepTimeoutValue < 8) {
+    updateSleepTimeout(sleepTimeouts[sleepTimeoutValue] * 1000);
+  } else {
+    updateSleepTimeout(120000);
+  }
+}
+
+
 void wakeDisplay() {
   u8g2.setPowerSave(0);
   displayOff = false;
@@ -92,6 +109,10 @@ void wakeDisplay() {
 }
 
 void checkIdle() {
+  if (idleTimeout == 0) {
+    return;
+  }
+
   if (!displayOff && millis() - lastActivity >= idleTimeout) {
     u8g2.setPowerSave(1);
     displayOff = true;
@@ -184,12 +205,11 @@ bool leftPrev = false;
 
 static unsigned long appStartTime = 0;
 static unsigned long lastXPReward = 0;
-static unsigned long pausedTime = 0;
-static bool xpPaused = false;
 static const char* currentAppName = "";
 static int currentXPAmount = 0;
 static bool inApplication = false;
 static int pendingXP = 0;
+static unsigned long totalActiveMinutes = 0;
 const unsigned long XP_REWARD_INTERVAL = 60000;
 
 bool justPressed(uint8_t pin, bool &prev) {
@@ -233,46 +253,39 @@ void startAppTracking(const char* appName) {
   currentXPAmount = getXPAmount(appName);
   appStartTime = millis();
   lastXPReward = appStartTime;
-  xpPaused = false;
+  totalActiveMinutes = 0;
   inApplication = true;
 }
 
 void stopAppTracking() {
   if (inApplication) {
-    unsigned long appDuration = millis() - appStartTime;
-    
-    if (appDuration > 600000) {
+    if (totalActiveMinutes >= 10) {
       pendingXP += 12;
-    } else if (appDuration > 300000) {
+    } else if (totalActiveMinutes >= 5) {
       pendingXP += 4;
     }
-    
+
     if (pendingXP > 0) {
       addXP(pendingXP);
       pendingXP = 0;
     }
-    
+
     inApplication = false;
     currentAppName = "";
     currentXPAmount = 0;
-    xpPaused = false;
+
+    updateLastActivity();
   }
 }
 
 void updateAppXP() {
   if (!inApplication) return;
-  
-  if (displayOff && !xpPaused) {
-    pausedTime = millis() - lastXPReward;
-    xpPaused = true;
-  } else if (!displayOff && xpPaused) {
-    lastXPReward = millis() - pausedTime;
-    xpPaused = false;
-  }
-  
-  if (!displayOff && millis() - lastXPReward >= XP_REWARD_INTERVAL) {
-    int xpAmount = 0;
-    
+
+  bool currentlyActive = (millis() - lastActivity < MAX_XP_IDLE_TIME);
+
+  if (currentlyActive && millis() - lastXPReward >= XP_REWARD_INTERVAL) {
+    totalActiveMinutes++;
+
     if (currentXPAmount > 0) {
       pendingXP += currentXPAmount;
     }
@@ -419,15 +432,19 @@ void runApp(MenuItem &mi) {
     checkIdle();
     updateAppXP();
     neopixelLoop();
+
+    if (anyButtonPressed()) {
+      updateLastActivity();
+    }
+
     mi.loop();
     if (digitalRead(BUTTON_SEL) == LOW) {
-      updateLastActivity();
       while (digitalRead(BUTTON_SEL) == LOW);
 
       if (mi.cleanup) {
         mi.cleanup();
       }
-      
+
       break;
     }
   }
@@ -454,6 +471,8 @@ void setup() {
 
   uint8_t dangerousValue = EEPROM.read(2);
   dangerousActionsEnabled = (dangerousValue == 1);
+
+  loadSleepTimeoutFromEEPROM();
 
   u8g2.begin();
   u8g2.setContrast(oledBrightness);

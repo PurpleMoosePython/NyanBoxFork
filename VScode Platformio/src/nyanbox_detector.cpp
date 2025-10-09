@@ -212,7 +212,6 @@ void nyanboxDetectorLoop() {
   if (now - lastButtonPress > debounceTime) {
     if (digitalRead(BTN_BACK) == LOW && isDetailView) {
       isDetailView = false;
-      updateLastActivity();
       lastButtonPress = now;
     }
 
@@ -221,18 +220,15 @@ void nyanboxDetectorLoop() {
         --currentIndex;
         if (currentIndex < listStartIndex)
           --listStartIndex;
-        updateLastActivity();
         lastButtonPress = now;
       } else if (digitalRead(BTN_DOWN) == LOW &&
                  currentIndex < (int)nyanBoxDevices.size() - 1) {
         ++currentIndex;
         if (currentIndex >= listStartIndex + 5)
           ++listStartIndex;
-        updateLastActivity();
         lastButtonPress = now;
       } else if (digitalRead(BTN_RIGHT) == LOW) {
         isDetailView = true;
-        updateLastActivity();
         lastButtonPress = now;
       }
     }

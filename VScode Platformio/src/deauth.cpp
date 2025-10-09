@@ -191,10 +191,6 @@ void deauthLoop() {
   bool left = digitalRead(BUTTON_PIN_LEFT) == LOW;
   bool right = digitalRead(BUTTON_PIN_RIGHT) == LOW;
   
-  if (up || down || left || right) {
-    updateLastActivity();
-  }
-
   switch (currentMode) {
   case MODE_MENU:
     drawMenu();

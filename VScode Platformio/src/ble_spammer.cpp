@@ -218,7 +218,6 @@ void bleSpamLoop() {
     char nameBuf[nameBufSize];
     
     if (digitalRead(BUTTON_PIN_LEFT) == LOW) {
-        updateLastActivity();
         mode = (mode + 1) % 4;
         nextIdx = 0;
         delay(200);
@@ -258,7 +257,6 @@ void bleSpamLoop() {
     u8g2.sendBuffer();
     
     if (digitalRead(BUTTON_PIN_CENTER) == LOW) {
-        updateLastActivity();
         isBleSpamming = false;
         esp_ble_gap_stop_advertising();
         BLEDevice::deinit();

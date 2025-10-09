@@ -18,13 +18,22 @@ extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 #define EEPROM_ADDRESS_NEOPIXEL 0
 #define EEPROM_ADDRESS_BRIGHTNESS 1
 #define EEPROM_ADDRESS_DANGEROUS_MODE 2
+#define EEPROM_ADDRESS_SLEEP_TIMEOUT 3
 
 int currentSetting = 0;
-int totalSettings = 4;
+int totalSettings = 5;
 bool neoPixelActive = true;
 uint8_t oledBrightness = 100;
 extern bool dangerousActionsEnabled;
 bool showResetConfirm = false;
+uint8_t sleepTimeoutIndex = 3;
+
+const unsigned long sleepTimeouts[] = {15, 30, 60, 120, 300, 900, 1800, 0};
+const char* sleepTimeoutNames[] = {"15s", "30s", "1m", "2m", "5m", "15m", "30m", "Off"};
+const int sleepTimeoutCount = 8;
+
+extern unsigned long idleTimeout;
+extern void updateSleepTimeout(unsigned long newTimeout);
 
 void handleDangerousActions() {
   if (!dangerousActionsEnabled) {
@@ -44,6 +53,7 @@ void handleDangerousActions() {
 void settingSetup() {
   uint8_t neoPixelValue = EEPROM.read(EEPROM_ADDRESS_NEOPIXEL);
   uint8_t brightnessValue = EEPROM.read(EEPROM_ADDRESS_BRIGHTNESS);
+  uint8_t sleepTimeoutValue = EEPROM.read(EEPROM_ADDRESS_SLEEP_TIMEOUT);
 
   if (neoPixelValue == 0xFF) {
     neoPixelActive = true;
@@ -59,7 +69,17 @@ void settingSetup() {
     oledBrightness = brightnessValue;
   }
 
+  if (sleepTimeoutValue == 0xFF || sleepTimeoutValue >= sleepTimeoutCount) {
+    sleepTimeoutIndex = 3;
+    EEPROM.write(EEPROM_ADDRESS_SLEEP_TIMEOUT, sleepTimeoutIndex);
+    EEPROM.commit();
+  } else {
+    sleepTimeoutIndex = sleepTimeoutValue;
+  }
+
   u8g2.setContrast(oledBrightness);
+
+  updateSleepTimeout(sleepTimeouts[sleepTimeoutIndex] * 1000);
 
   currentSetting = 0;
   showResetConfirm = false;
@@ -78,9 +98,6 @@ void settingLoop() {
   bool right = !digitalRead(BUTTON_PIN_RIGHT);
   bool left = !digitalRead(BUTTON_PIN_LEFT);
 
-  if (up || down || right || left) {
-    updateLastActivity();
-  }
 
   if (up) {
     if (!upPressed) {
@@ -136,6 +153,13 @@ void settingLoop() {
             break;
 
           case 3:
+            sleepTimeoutIndex = (sleepTimeoutIndex + 1) % sleepTimeoutCount;
+            EEPROM.write(EEPROM_ADDRESS_SLEEP_TIMEOUT, sleepTimeoutIndex);
+            EEPROM.commit();
+            updateSleepTimeout(sleepTimeouts[sleepTimeoutIndex] * 1000);
+            break;
+
+          case 4:
             showResetConfirm = true;
             break;
         }
@@ -176,25 +200,42 @@ void settingLoop() {
 
     u8g2.setFont(u8g2_font_6x10_tr);
 
-    if (currentSetting == 0) u8g2.drawStr(2, 25, ">");
-    u8g2.drawStr(10, 25, "NeoPixel:");
-    u8g2.drawStr(85, 25, neoPixelActive ? "On" : "Off");
+    int startIndex = max(0, min(currentSetting - 1, totalSettings - 4));
+    int displayIndex = 0;
 
-    if (currentSetting == 1) u8g2.drawStr(2, 37, ">");
-    u8g2.drawStr(10, 37, "Brightness:");
-    char brightStr[8];
-    sprintf(brightStr, "%d%%", (int)map(oledBrightness, 0, 255, 0, 100));
-    u8g2.drawStr(85, 37, brightStr);
+    for (int i = startIndex; i < min(startIndex + 4, totalSettings); i++) {
+      int yPos = 25 + displayIndex * 12;
 
-    if (currentSetting == 2) u8g2.drawStr(2, 49, ">");
-    u8g2.drawStr(10, 49, "Dangerous:");
-    u8g2.drawStr(85, 49, dangerousActionsEnabled ? "On" : "Off");
+      if (currentSetting == i) u8g2.drawStr(2, yPos, ">");
 
-    if (currentSetting == 3) u8g2.drawStr(2, 61, ">");
-    u8g2.drawStr(10, 61, "Reset XP:");
-    char lvlStr[8];
-    sprintf(lvlStr, "Lv%d", getCurrentLevel());
-    u8g2.drawStr(85, 61, lvlStr);
+      switch (i) {
+        case 0:
+          u8g2.drawStr(10, yPos, "NeoPixel:");
+          u8g2.drawStr(85, yPos, neoPixelActive ? "On" : "Off");
+          break;
+        case 1:
+          u8g2.drawStr(10, yPos, "Brightness:");
+          char brightStr[8];
+          sprintf(brightStr, "%d%%", (int)map(oledBrightness, 0, 255, 0, 100));
+          u8g2.drawStr(85, yPos, brightStr);
+          break;
+        case 2:
+          u8g2.drawStr(10, yPos, "Dangerous:");
+          u8g2.drawStr(85, yPos, dangerousActionsEnabled ? "On" : "Off");
+          break;
+        case 3:
+          u8g2.drawStr(10, yPos, "Sleep:");
+          u8g2.drawStr(85, yPos, sleepTimeoutNames[sleepTimeoutIndex]);
+          break;
+        case 4:
+          u8g2.drawStr(10, yPos, "Reset XP:");
+          char lvlStr[8];
+          sprintf(lvlStr, "Lv%d", getCurrentLevel());
+          u8g2.drawStr(85, yPos, lvlStr);
+          break;
+      }
+      displayIndex++;
+    }
   }
 
   u8g2.sendBuffer();

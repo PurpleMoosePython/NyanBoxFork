@@ -260,13 +260,11 @@ void channelAnalyzerLoop() {
     
     if (upNow && !upPressed) {
         currentView = (currentView - 1 + 3) % 3;
-        updateLastActivity();
         delay(200);
     }
     
     if (downNow && !downPressed) {
         currentView = (currentView + 1) % 3;
-        updateLastActivity();
         delay(200);
     }
     

@@ -164,7 +164,6 @@ void sourappleLoop() {
 
     if (millis() - lastButtonCheck > 300) {
         if (digitalRead(BUTTON_PIN_UP) == LOW) {
-            updateLastActivity();
             isSpamming = !isSpamming;
             drawDisplay();
             delay(500);

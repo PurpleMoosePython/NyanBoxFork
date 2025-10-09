@@ -215,9 +215,6 @@ void airtagSpooferLoop() {
   bool leftNow = digitalRead(BTN_BACK) == LOW;
   bool centerNow = digitalRead(BTN_CENTER) == LOW;
 
-  if (upNow || downNow || rightNow || leftNow || centerNow) {
-    updateLastActivity();
-  }
 
   switch (currentState) {
     case SPOOFER_MENU:

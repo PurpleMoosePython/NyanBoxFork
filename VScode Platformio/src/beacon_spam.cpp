@@ -226,10 +226,6 @@ void beaconSpamLoop() {
   bool left = digitalRead(BUTTON_PIN_LEFT) == LOW;
   bool right = digitalRead(BUTTON_PIN_RIGHT) == LOW;
   
-  if (up || down || left || right) {
-    updateLastActivity();
-  }
-
   bool anySelected = false;
   for (const auto& entry : scannedSSIDs) if (entry.selected) { anySelected = true; break; }
 
