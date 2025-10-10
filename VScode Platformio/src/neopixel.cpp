@@ -16,6 +16,7 @@ void neopixelSetup() {
   
  if (neoPixelActive) {
   pixels.begin();
+  pixels.setBrightness(8);
   pixels.clear();
   pixels.show();
   }

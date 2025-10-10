@@ -421,7 +421,7 @@ void runApp(MenuItem &mi) {
   if (isReconApp(mi.name)) {
     blinkColor(0, 0, 255);  // Blue
   } else if (isOffensiveApp(mi.name)) {
-    blinkColor(25, 21, 22); // Pink
+    blinkColor(255, 0, 0); // Red
   }
 
   mi.setup();
