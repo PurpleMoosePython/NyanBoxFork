@@ -109,7 +109,7 @@ Hit RIGHT in the main menu to check your stats. Level up by tinkering with RF si
 
 ## 📱 Official Firmware Flashing
 
-For nyanBOX devices purchased from [shop.nyandevices.com](https://shop.nyandevices.com), follow the official flashing process:
+For nyanBOX devices purchased from [shop.nyandevices.com](https://shop.nyandevices.com), please follow the official flashing process:
 
 ### Prerequisites
 Install the USB drivers for your operating system:
@@ -125,6 +125,16 @@ Install the USB drivers for your operating system:
 
 ### Official Flashing Process
 
+### Option 1 — Web Flasher (Recommended)
+1. Visit **[nyandevices.com/flasher](https://nyandevices.com/flasher/)**
+2. Power off your nyanBOX device and connect it via USB-C
+3. Select your serial port and click **Install nyanBOX Firmware**
+4. Wait for the flashing process to complete
+  - **Note:** If flashing fails, please view the troubleshooting instructions on the Web Flasher
+
+---
+
+### Option 2 — Manual Flashing via PlatformIO
 1. **Install PlatformIO & Visual Studio Code**
    - Download and install [Visual Studio Code](https://code.visualstudio.com/)
    - Install the [PlatformIO IDE](https://platformio.org/install/ide?install=vscode) extension
@@ -194,6 +204,7 @@ If you find nyanBox useful, please consider supporting the project:
 - [ESP32-Sour-Apple](https://github.com/RapierXbox/ESP32-Sour-Apple)
 - [PwnGridSpam](https://github.com/7h30th3r0n3/PwnGridSpam)
 - [ESP32-AirTag-Scanner](https://github.com/MatthewKuKanich/ESP32-AirTag-Scanner)
+- [ESP Web Tools](https://esphome.github.io/esp-web-tools/)
 - [Original nRFBOX Project](https://github.com/cifertech/nrfbox)
 
 ### Community
