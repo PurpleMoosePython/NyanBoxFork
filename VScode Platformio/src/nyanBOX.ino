@@ -547,11 +547,19 @@ void loop() {
   if (upNow) {
     updateLastActivity();
     if (!upPressed) {
-      if (item_selected > 0) item_selected--;
+      if (item_selected > 0) {
+        item_selected--;
+      } else {
+        item_selected = getVisibleMenuSize() - 1;
+      }
       upLastMillis = millis();
       upNextRepeat = upLastMillis + initialDelay;
     } else if (millis() >= upNextRepeat) {
-      if (item_selected > 0) item_selected--;
+      if (item_selected > 0) {
+        item_selected--;
+      } else {
+        item_selected = getVisibleMenuSize() - 1;
+      }
       upNextRepeat += repeatInterval;
     }
   }
@@ -560,11 +568,19 @@ void loop() {
   if (downNow) {
     updateLastActivity();
     if (!downPressed) {
-      if (item_selected < getVisibleMenuSize() - 1) item_selected++;
+      if (item_selected < getVisibleMenuSize() - 1) {
+        item_selected++;
+      } else {
+        item_selected = 0;
+      }
       downLastMillis = millis();
       downNextRepeat = downLastMillis + initialDelay;
     } else if (millis() >= downNextRepeat) {
-      if (item_selected < getVisibleMenuSize() - 1) item_selected++;
+      if (item_selected < getVisibleMenuSize() - 1) {
+        item_selected++;
+      } else {
+        item_selected = 0;
+      }
       downNextRepeat += repeatInterval;
     }
   }
