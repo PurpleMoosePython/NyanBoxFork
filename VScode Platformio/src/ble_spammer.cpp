@@ -14,9 +14,12 @@
 #include <esp_system.h>
     
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
-    
-bool isBleSpamming = false;
-static uint8_t mode = 3; // 0=Custom, 1=Random ASCII, 2=Random Emoji, 3=All
+
+enum BleSpamMode { BLE_SPAM_MENU, BLE_SPAM_RANDOM, BLE_SPAM_EMOJI, BLE_SPAM_CUSTOM, BLE_SPAM_ALL };
+static BleSpamMode bleSpamMode = BLE_SPAM_MENU;
+static int menuSelection = 0;
+static unsigned long lastButtonPress = 0;
+const unsigned long debounceDelay = 200;
 
 // BLE advertising parameters (non-connectable)
 static esp_ble_adv_params_t adv_params = {
@@ -139,17 +142,30 @@ static void generateRandomMixedName(char* buf) {
     buf[pos] = '\0';
 }
     
-static const char* pickName(char* buf) {
-    if (mode == 0 && customNamesCount > 0) {
+static const char* pickName(char* buf, uint8_t nameMode) {
+    if (nameMode == 0 && customNamesCount > 0) {
         return customNames[random(customNamesCount)];
     }
-    if (mode == 1) {
+    if (nameMode == 1) {
         uint8_t len = random(minNameLen, maxNameLen + 1);
         generateRandomAlphaName(buf, len);
     } else {
         generateRandomEmojiName(buf);
     }
     return buf;
+}
+
+static void drawBleSpamMenu() {
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(0, 10, "BLE Spam Mode:");
+    u8g2.drawStr(0, 22, menuSelection == 0 ? "> Random" : "  Random");
+    u8g2.drawStr(0, 32, menuSelection == 1 ? "> Emoji" : "  Emoji");
+    u8g2.drawStr(0, 42, menuSelection == 2 ? "> Custom" : "  Custom");
+    u8g2.drawStr(0, 52, menuSelection == 3 ? "> All" : "  All");
+    u8g2.setFont(u8g2_font_5x8_tr);
+    u8g2.drawStr(0, 62, "U/D=Move R=Start SEL=Exit");
+    u8g2.sendBuffer();
 }
     
 // Packet structure for each advertisement
@@ -181,85 +197,204 @@ static void make_packet(const char* name, uint8_t* size, PacketPtr* packet) {
 }
     
 static void advertiseDevice(const char* chosenName) {
+    static unsigned long lastAdv = 0;
+    unsigned long now = millis();
+
+    if (now - lastAdv < 15) {
+        delay(15 - (now - lastAdv));
+    }
+    lastAdv = millis();
+
     esp_ble_gap_stop_advertising();
-    delay(5);
+    delay(10);
+
     esp_bd_addr_t randAddr;
     for (int i = 0; i < 6; i++) randAddr[i] = random(0,256);
     randAddr[0] = (randAddr[0] & 0x3F) | 0xC0;
     esp_ble_gap_set_rand_addr(randAddr);
-    delay(5);
-    uint8_t size; PacketPtr packet;
+
+    uint8_t size;
+    PacketPtr packet;
     make_packet(chosenName, &size, &packet);
-    esp_ble_gap_config_adv_data_raw(packet, size);
-    free(packet);
+    if (packet != NULL) {
+        esp_ble_gap_config_adv_data_raw(packet, size);
+        free(packet);
+    }
+    delay(10);
     esp_ble_gap_start_advertising(&adv_params);
 }
     
 void bleSpamSetup() {
-    Serial.begin(115200);
     randomSeed((uint32_t)esp_random());
-    pinMode(BUTTON_PIN_CENTER, INPUT_PULLUP);
+    pinMode(BUTTON_PIN_UP, INPUT_PULLUP);
+    pinMode(BUTTON_PIN_DOWN, INPUT_PULLUP);
+    pinMode(BUTTON_PIN_RIGHT, INPUT_PULLUP);
     pinMode(BUTTON_PIN_LEFT, INPUT_PULLUP);
-    
-    BLEDevice::init("");
+
+    BLEDevice::init("nyanBOX BLE Spammer");
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P9);
     esp_ble_gap_register_callback([](esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param){});
-    
-    isBleSpamming = true;
+
+    delay(100);
+
+    bleSpamMode = BLE_SPAM_MENU;
+    menuSelection = 0;
+    drawBleSpamMenu();
 }
     
 void bleSpamLoop() {
-    if (!isBleSpamming) return;
-    
+    unsigned long now = millis();
     static uint8_t nextIdx = 0;
+    static unsigned long lastDisplayUpdate = 0;
     const uint8_t batchSize = 5;
     char nameBuf[nameBufSize];
-    
-    if (digitalRead(BUTTON_PIN_LEFT) == LOW) {
-        mode = (mode + 1) % 4;
-        nextIdx = 0;
-        delay(200);
-    }
-    
-    for (uint8_t i = 0; i < batchSize; i++) {
-        const char* name;
-        uint8_t useMode = mode;
-        if (mode == 3) useMode = i % 3;
 
-        if (useMode == 0 && customNamesCount > 0) {
-            name = customNames[nextIdx++];
-            if (nextIdx >= customNamesCount) nextIdx = 0;
-        } else {
-            uint8_t oldMode = mode;
-            mode = useMode;
-            name = pickName(nameBuf);
-            mode = oldMode;
-        }
-        advertiseDevice(name);
-        delay(5);
-    }
-    
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-    u8g2.drawStr(0, 12, "BLE Spam Active");
-    u8g2.setCursor(0, 24);
-    u8g2.print("Mode: ");
-    if (mode == 0) u8g2.print("Custom");
-    else if (mode == 1) u8g2.print("Random");
-    else if (mode == 2) u8g2.print("Random/Emoji");
-    else u8g2.print("All");
-    u8g2.setCursor(0, 48);
-    u8g2.print("< to toggle modes");
-    u8g2.setCursor(0, 60);
-    u8g2.print("SEL to exit");
-    u8g2.sendBuffer();
-    
-    if (digitalRead(BUTTON_PIN_CENTER) == LOW) {
-        isBleSpamming = false;
-        esp_ble_gap_stop_advertising();
-        BLEDevice::deinit();
-        return;
+    bool up = digitalRead(BUTTON_PIN_UP) == LOW;
+    bool down = digitalRead(BUTTON_PIN_DOWN) == LOW;
+    bool left = digitalRead(BUTTON_PIN_LEFT) == LOW;
+    bool right = digitalRead(BUTTON_PIN_RIGHT) == LOW;
+
+    switch (bleSpamMode) {
+        case BLE_SPAM_MENU:
+            drawBleSpamMenu();
+            if (now - lastButtonPress > debounceDelay) {
+                if (up) {
+                    menuSelection = (menuSelection - 1 + 4) % 4;
+                    lastButtonPress = now;
+                } else if (down) {
+                    menuSelection = (menuSelection + 1) % 4;
+                    lastButtonPress = now;
+                } else if (right) {
+                    if (menuSelection == 0) {
+                        bleSpamMode = BLE_SPAM_RANDOM;
+                    } else if (menuSelection == 1) {
+                        bleSpamMode = BLE_SPAM_EMOJI;
+                    } else if (menuSelection == 2) {
+                        bleSpamMode = BLE_SPAM_CUSTOM;
+                    } else {
+                        bleSpamMode = BLE_SPAM_ALL;
+                    }
+                    nextIdx = 0;
+                    lastButtonPress = now;
+                }
+            }
+            break;
+
+        case BLE_SPAM_RANDOM:
+            for (uint8_t i = 0; i < batchSize; i++) {
+                const char* name = pickName(nameBuf, 1);
+                advertiseDevice(name);
+            }
+
+            if (now - lastDisplayUpdate >= 250) {
+                lastDisplayUpdate = now;
+                u8g2.clearBuffer();
+                u8g2.setFont(u8g2_font_6x10_tr);
+                u8g2.drawStr(0, 12, "Random Spam");
+                u8g2.drawStr(0, 28, "Status: Active");
+                u8g2.setFont(u8g2_font_5x8_tr);
+                u8g2.drawStr(0, 62, "L=Back SEL=Exit");
+                u8g2.sendBuffer();
+            }
+
+            if (left && now - lastButtonPress > debounceDelay) {
+                esp_ble_gap_stop_advertising();
+                delay(100);
+                bleSpamMode = BLE_SPAM_MENU;
+                lastButtonPress = now;
+            }
+            break;
+
+        case BLE_SPAM_EMOJI:
+            for (uint8_t i = 0; i < batchSize; i++) {
+                const char* name = pickName(nameBuf, 2);
+                advertiseDevice(name);
+            }
+
+            if (now - lastDisplayUpdate >= 250) {
+                lastDisplayUpdate = now;
+                u8g2.clearBuffer();
+                u8g2.setFont(u8g2_font_6x10_tr);
+                u8g2.drawStr(0, 12, "Emoji Spam");
+                u8g2.drawStr(0, 28, "Status: Active");
+                u8g2.setFont(u8g2_font_5x8_tr);
+                u8g2.drawStr(0, 62, "L=Back SEL=Exit");
+                u8g2.sendBuffer();
+            }
+
+            if (left && now - lastButtonPress > debounceDelay) {
+                esp_ble_gap_stop_advertising();
+                delay(100);
+                bleSpamMode = BLE_SPAM_MENU;
+                lastButtonPress = now;
+            }
+            break;
+
+        case BLE_SPAM_CUSTOM:
+            if (customNamesCount > 0) {
+                for (uint8_t i = 0; i < batchSize; i++) {
+                    const char* name = customNames[nextIdx];
+                    nextIdx = (nextIdx + 1) % customNamesCount;
+                    advertiseDevice(name);
+                }
+            }
+
+            if (now - lastDisplayUpdate >= 250) {
+                lastDisplayUpdate = now;
+                u8g2.clearBuffer();
+                u8g2.setFont(u8g2_font_6x10_tr);
+                u8g2.drawStr(0, 12, "Custom Spam");
+                char buf[32];
+                snprintf(buf, sizeof(buf), "Index Count: %d", customNamesCount);
+                u8g2.drawStr(0, 28, buf);
+                u8g2.drawStr(0, 44, "Status: Active");
+                u8g2.setFont(u8g2_font_5x8_tr);
+                u8g2.drawStr(0, 62, "L=Back SEL=Exit");
+                u8g2.sendBuffer();
+            }
+
+            if (left && now - lastButtonPress > debounceDelay) {
+                esp_ble_gap_stop_advertising();
+                delay(100);
+                bleSpamMode = BLE_SPAM_MENU;
+                nextIdx = 0;
+                lastButtonPress = now;
+            }
+            break;
+
+        case BLE_SPAM_ALL:
+            for (uint8_t i = 0; i < batchSize; i++) {
+                uint8_t useMode = i % 3;
+                const char* name;
+                if (useMode == 0 && customNamesCount > 0) {
+                    name = customNames[nextIdx];
+                    nextIdx = (nextIdx + 1) % customNamesCount;
+                } else {
+                    name = pickName(nameBuf, useMode);
+                }
+                advertiseDevice(name);
+            }
+
+            if (now - lastDisplayUpdate >= 250) {
+                lastDisplayUpdate = now;
+                u8g2.clearBuffer();
+                u8g2.setFont(u8g2_font_6x10_tr);
+                u8g2.drawStr(0, 12, "All Spam");
+                u8g2.drawStr(0, 28, "Status: Active");
+                u8g2.setFont(u8g2_font_5x8_tr);
+                u8g2.drawStr(0, 62, "L=Back SEL=Exit");
+                u8g2.sendBuffer();
+            }
+
+            if (left && now - lastButtonPress > debounceDelay) {
+                esp_ble_gap_stop_advertising();
+                delay(100);
+                bleSpamMode = BLE_SPAM_MENU;
+                nextIdx = 0;
+                lastButtonPress = now;
+            }
+            break;
     }
 }

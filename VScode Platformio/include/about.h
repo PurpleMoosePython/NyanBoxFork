@@ -9,7 +9,7 @@
 #include <U8g2lib.h>
 #include "pindefs.h"
 
-#define NYANBOX_VERSION "v2.9.33"
+#define NYANBOX_VERSION "v2.9.34"
 extern const char* nyanboxVersion;
 
 void aboutSetup();
