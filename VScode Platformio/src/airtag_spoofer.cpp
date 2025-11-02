@@ -7,6 +7,9 @@
 #include "../include/airtag_spoofer.h"
 #include "../include/airtag_detector.h"
 #include "../include/sleep_manager.h"
+#include "esp_bt.h"
+#include "esp_gap_ble_api.h"
+#include "esp_bt_main.h"
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 extern std::vector<AirTagDeviceData> airtagDevices;
@@ -25,8 +28,7 @@ enum AirTagSpooferState {
 };
 
 static AirTagSpooferState currentState = SPOOFER_MENU;
-static BLEAdvertising *pAdvertising;
-static BLEServer *pServer;
+static bool bleInitialized = false;
 
 static int menuSelection = 0;
 static int cloneTargetIndex = 0;
@@ -37,6 +39,15 @@ static int currentCloneAllIndex = 0;
 static unsigned long lastButtonPress = 0;
 const unsigned long debounceTime = 200;
 const unsigned long advertiseInterval = 10;
+
+static esp_ble_adv_params_t adv_params = {
+    .adv_int_min        = 0x20,
+    .adv_int_max        = 0x40,
+    .adv_type           = ADV_TYPE_NONCONN_IND,
+    .own_addr_type      = BLE_ADDR_TYPE_RANDOM,
+    .channel_map        = ADV_CHNL_ALL,
+    .adv_filter_policy  = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+};
 
 void drawMainMenu() {
   u8g2.clearBuffer();
@@ -132,11 +143,20 @@ void drawCloneAllRunning() {
 }
 
 void initializeAdvertising() {
-  if (!pServer) {
-    BLEDevice::init("AirTagSpoofer");
-    pServer = BLEDevice::createServer();
-    pAdvertising = pServer->getAdvertising();
-    pAdvertising->setAdvertisementType(ADV_TYPE_NONCONN_IND);
+  if (!bleInitialized) {
+    if (!btStarted()) {
+      btStart();
+    }
+
+    esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
+    if (bt_state == ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+      esp_bluedroid_init();
+    }
+    if (bt_state != ESP_BLUEDROID_STATUS_ENABLED) {
+      esp_bluedroid_enable();
+    }
+
+    bleInitialized = true;
   }
 }
 
@@ -147,21 +167,20 @@ void startSingleClone() {
 
   auto &device = airtagDevices[cloneTargetIndex];
 
-  esp_bd_addr_t airtagAddr;
+  esp_ble_gap_stop_advertising();
+  delay(10);
 
+  esp_bd_addr_t airtagAddr;
   sscanf(device.address, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
          &airtagAddr[0], &airtagAddr[1], &airtagAddr[2],
          &airtagAddr[3], &airtagAddr[4], &airtagAddr[5]);
 
-  pAdvertising->setDeviceAddress(airtagAddr, BLE_ADDR_TYPE_RANDOM);
+  esp_ble_gap_set_rand_addr(airtagAddr);
 
-  BLEAdvertisementData advData;
+  esp_ble_gap_config_adv_data_raw(device.payload, device.payloadLength);
 
-  std::string payloadData((char*)device.payload, device.payloadLength);
-  advData.addData(payloadData);
-
-  pAdvertising->setAdvertisementData(advData);
-  pAdvertising->start();
+  delay(10);
+  esp_ble_gap_start_advertising(&adv_params);
 
   isAdvertising = true;
   lastAdvertiseTime = millis();
@@ -177,7 +196,7 @@ void startCloneAllSpam() {
 
 void stopAdvertising() {
   if (!isAdvertising) return;
-  pAdvertising->stop();
+  esp_ble_gap_stop_advertising();
   delay(5);
   isAdvertising = false;
 }
@@ -189,8 +208,7 @@ void airtagSpooferSetup() {
   isAdvertising = false;
   lastButtonPress = 0;
   currentState = SPOOFER_MENU;
-  pServer = nullptr;
-  pAdvertising = nullptr;
+  bleInitialized = false;
 
   u8g2.begin();
   u8g2.setFont(u8g2_font_6x10_tr);

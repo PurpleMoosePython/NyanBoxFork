@@ -7,10 +7,9 @@
 
 #include "../include/cardskimmer_detector.h"
 #include "../include/sleep_manager.h"
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEScan.h>
-#include <BLEAdvertisedDevice.h>
+#include "esp_bt.h"
+#include "esp_gap_ble_api.h"
+#include "esp_bt_main.h"
 #include <vector>
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
@@ -44,77 +43,85 @@ bool isDetailView = false;
 unsigned long lastButtonPress = 0;
 const unsigned long debounceTime = 200;
 
-static BLEScan *pBLEScan = nullptr;
 static bool isScanning = false;
 static unsigned long lastScanTime = 0;
-const unsigned long SCAN_INTERVAL = 30000;
-const unsigned long SCAN_DURATION = 5000;
+const unsigned long scanInterval = 30000;
 
-static int skimmerCallbackCount = 0;
-static unsigned long lastCallbackTime = 0;
+static bool bleInitialized = false;
+static bool scanCompleted = false;
 
-bool isKnownSkimmer(const char* deviceName) {
-  for (int i = 0; i < KNOWN_SKIMMER_COUNT; i++) {
-    if (strcmp(deviceName, KNOWN_SKIMMERS[i]) == 0) {
-      return true;
+static esp_ble_scan_params_t ble_scan_params = {
+    .scan_type              = BLE_SCAN_TYPE_ACTIVE,
+    .own_addr_type          = BLE_ADDR_TYPE_PUBLIC,
+    .scan_filter_policy     = BLE_SCAN_FILTER_ALLOW_ALL,
+    .scan_interval          = 0x100,
+    .scan_window            = 0xA0,
+    .scan_duplicate         = BLE_SCAN_DUPLICATE_DISABLE
+};
+
+static void bda_to_string(uint8_t *bda, char *str, size_t size) {
+    if (bda == NULL || str == NULL || size < 18) {
+        return;
     }
-  }
-  return false;
+    snprintf(str, size, "%02x:%02x:%02x:%02x:%02x:%02x",
+             bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
 }
 
-class CardSkimmerCallback : public BLEAdvertisedDeviceCallbacks {
-  void onResult(BLEAdvertisedDevice advertisedDevice) override {
-    skimmerCallbackCount++;
-
-    unsigned long now = millis();
-    if (now - lastCallbackTime < 50) {
-      return;
+bool isKnownSkimmer(const char* deviceName) {
+    for (int i = 0; i < KNOWN_SKIMMER_COUNT; i++) {
+        if (strcmp(deviceName, KNOWN_SKIMMERS[i]) == 0) {
+            return true;
+        }
     }
-    lastCallbackTime = now;
+    return false;
+}
 
-    if (skimmerCallbackCount > 500 || skimmerDevices.size() >= MAX_DEVICES) {
-      if (isScanning && pBLEScan) {
-        pBLEScan->stop();
-        isScanning = false;
-      }
-      return;
+static void process_scan_result(esp_ble_gap_cb_param_t *scan_result) {
+    if (skimmerDevices.size() >= MAX_DEVICES) {
+        return;
     }
 
-    if (skimmerDevices.size() > 80 && skimmerCallbackCount % 2 != 0) return;
-
-    if (!advertisedDevice.haveName()) return;
-
-    std::string nameStd = advertisedDevice.getName();
-    if (nameStd.length() == 0 || nameStd.length() >= 32) return;
-
-    char deviceName[32];
-    strncpy(deviceName, nameStd.c_str(), 31);
-    deviceName[31] = '\0';
-
-    if (!isKnownSkimmer(deviceName)) return;
-
-    BLEAddress addr = advertisedDevice.getAddress();
-    const char* addrCStr = addr.toString().c_str();
-
+    uint8_t *bda = scan_result->scan_rst.bda;
     char addrStr[18];
-    strncpy(addrStr, addrCStr, 17);
-    addrStr[17] = '\0';
+    bda_to_string(bda, addrStr, sizeof(addrStr));
 
     if (strlen(addrStr) < 12) return;
 
-    int8_t deviceRSSI = advertisedDevice.getRSSI();
+    uint8_t adv_name_len = 0;
+    uint8_t *adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
+                                                  ESP_BLE_AD_TYPE_NAME_CMPL,
+                                                  &adv_name_len);
+    
+    if (adv_name == NULL) {
+        adv_name_len = 0;
+        adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
+                                            ESP_BLE_AD_TYPE_NAME_SHORT,
+                                            &adv_name_len);
+    }
 
-    for (int i = 0; i < skimmerDevices.size(); i++) {
-      if (strcmp(skimmerDevices[i].address, addrStr) == 0) {
-        skimmerDevices[i].rssi = deviceRSSI;
-        skimmerDevices[i].lastSeen = millis();
-
-        std::sort(skimmerDevices.begin(), skimmerDevices.end(),
-                  [](const SkimmerDeviceData &a, const SkimmerDeviceData &b) {
-                    return a.rssi > b.rssi;
-                  });
+    if (adv_name == NULL || adv_name_len == 0 || adv_name_len >= 32) {
         return;
-      }
+    }
+
+    char deviceName[32];
+    memcpy(deviceName, adv_name, adv_name_len);
+    deviceName[adv_name_len] = '\0';
+
+    if (!isKnownSkimmer(deviceName)) {
+        return;
+    }
+
+    for (size_t i = 0; i < skimmerDevices.size(); i++) {
+        if (strcmp(skimmerDevices[i].address, addrStr) == 0) {
+            skimmerDevices[i].rssi = scan_result->scan_rst.rssi;
+            skimmerDevices[i].lastSeen = millis();
+            
+            std::sort(skimmerDevices.begin(), skimmerDevices.end(),
+                      [](const SkimmerDeviceData &a, const SkimmerDeviceData &b) {
+                        return a.rssi > b.rssi;
+                      });
+            return;
+        }
     }
 
     SkimmerDeviceData newDev = {};
@@ -122,175 +129,214 @@ class CardSkimmerCallback : public BLEAdvertisedDeviceCallbacks {
     newDev.address[17] = '\0';
     strncpy(newDev.name, deviceName, 31);
     newDev.name[31] = '\0';
-    newDev.rssi = deviceRSSI;
+    newDev.rssi = scan_result->scan_rst.rssi;
     newDev.lastSeen = millis();
 
     skimmerDevices.push_back(newDev);
-
+    
     std::sort(skimmerDevices.begin(), skimmerDevices.end(),
               [](const SkimmerDeviceData &a, const SkimmerDeviceData &b) {
                 return a.rssi > b.rssi;
               });
-  }
-};
+}
 
-static CardSkimmerCallback skimmerCallbacks;
+static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
+    switch (event) {
+    case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT:
+        if (param->scan_param_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+            isScanning = true;
+            esp_ble_gap_start_scanning(8);
+            lastScanTime = millis();
+        }
+        break;
+    case ESP_GAP_BLE_SCAN_START_COMPLETE_EVT:
+        if (param->scan_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+            isScanning = false;
+        }
+        break;
+    case ESP_GAP_BLE_SCAN_RESULT_EVT:
+        switch (param->scan_rst.search_evt) {
+        case ESP_GAP_SEARCH_INQ_RES_EVT:
+            process_scan_result(param);
+            break;
+        case ESP_GAP_SEARCH_INQ_CMPL_EVT:
+            isScanning = false;
+            lastScanTime = millis();
+            scanCompleted = true;
+            break;
+        default:
+            break;
+        }
+        break;
+    case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
+        isScanning = false;
+        scanCompleted = true;
+        break;
+    default:
+        break;
+    }
+}
 
 void cardskimmerDetectorSetup() {
-  skimmerDevices.clear();
-  skimmerDevices.reserve(MAX_DEVICES);
-  currentIndex = listStartIndex = 0;
-  isDetailView = false;
-  lastButtonPress = 0;
-  isScanning = false;
-  skimmerCallbackCount = 0;
-  lastCallbackTime = 0;
+    skimmerDevices.clear();
+    skimmerDevices.reserve(MAX_DEVICES);
+    currentIndex = listStartIndex = 0;
+    isDetailView = false;
+    lastButtonPress = 0;
+    isScanning = true;
+    scanCompleted = false;
 
-  u8g2.begin();
-  u8g2.setFont(u8g2_font_6x10_tr);
-  u8g2.clearBuffer();
-  u8g2.drawStr(0, 10, "Skimmer Detector");
-  u8g2.drawStr(0, 20, "Initializing...");
-  u8g2.sendBuffer();
+    u8g2.begin();
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.clearBuffer();
+    u8g2.drawStr(0, 10, "Scanning for");
+    u8g2.drawStr(0, 20, "Card Skimmers...");
+    u8g2.sendBuffer();
 
-  BLEDevice::init("SkimmerDetector");
-  pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(&skimmerCallbacks);
-  pBLEScan->setActiveScan(true);
-  pBLEScan->setInterval(1000);
-  pBLEScan->setWindow(200);
+    if (!btStarted()) {
+        btStart();
+    }
 
-  pBLEScan->start(SCAN_DURATION / 1000, false);
-  isScanning = true;
-  lastScanTime = millis();
+    esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
+    if (bt_state == ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+        esp_bluedroid_init();
+    }
+    if (bt_state != ESP_BLUEDROID_STATUS_ENABLED) {
+        esp_bluedroid_enable();
+    }
 
-  pinMode(BTN_UP, INPUT_PULLUP);
-  pinMode(BTN_DOWN, INPUT_PULLUP);
-  pinMode(BTN_RIGHT, INPUT_PULLUP);
-  pinMode(BTN_BACK, INPUT_PULLUP);
-  pinMode(BTN_CENTER, INPUT_PULLUP);
+    esp_ble_gap_register_callback(esp_gap_cb);
+    esp_ble_gap_set_scan_params(&ble_scan_params);
+
+    bleInitialized = true;
+
+    pinMode(BTN_UP, INPUT_PULLUP);
+    pinMode(BTN_DOWN, INPUT_PULLUP);
+    pinMode(BTN_RIGHT, INPUT_PULLUP);
+    pinMode(BTN_BACK, INPUT_PULLUP);
+    pinMode(BTN_CENTER, INPUT_PULLUP);
 }
 
 void cardskimmerDetectorLoop() {
-  unsigned long now = millis();
+    if (!bleInitialized) return;
 
-  if (now - lastScanTime > 10000) {
-    skimmerCallbackCount = 0;
-  }
+    unsigned long now = millis();
 
-  if (isScanning && now - lastScanTime > SCAN_DURATION) {
-    pBLEScan->stop();
-    isScanning = false;
-    skimmerCallbackCount = 0;
-    lastScanTime = now;
-  }
-  else if (!isScanning && now - lastScanTime > SCAN_INTERVAL) {
-    if (skimmerDevices.size() >= MAX_DEVICES) {
-      std::sort(skimmerDevices.begin(), skimmerDevices.end(),
-                [](const SkimmerDeviceData &a, const SkimmerDeviceData &b) {
-                  if (a.lastSeen != b.lastSeen) {
-                    return a.lastSeen < b.lastSeen;
-                  }
-                  return a.rssi < b.rssi;
-                });
-
-      int devicesToRemove = MAX_DEVICES / 4;
-      if (devicesToRemove > 0) {
-        skimmerDevices.erase(skimmerDevices.begin(),
-                            skimmerDevices.begin() + devicesToRemove);
-      }
-
-      currentIndex = listStartIndex = 0;
+    if (isScanning) {
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_6x10_tr);
+        u8g2.drawStr(0, 10, "Scanning for");
+        u8g2.drawStr(0, 20, "Card Skimmers...");
+        u8g2.sendBuffer();
+        return;
     }
 
-    skimmerCallbackCount = 0;
-    pBLEScan->start(SCAN_DURATION / 1000, false);
-    isScanning = true;
-    lastScanTime = now;
-  }
-
-  static bool showingRefresh = false;
-  if (!isScanning && now - lastScanTime > SCAN_INTERVAL - 1000) {
-    showingRefresh = true;
-  } else if (isScanning && showingRefresh) {
-    showingRefresh = false;
-  }
-
-  if (now - lastButtonPress > debounceTime) {
-    if (!isDetailView && digitalRead(BTN_UP) == LOW && currentIndex > 0) {
-      --currentIndex;
-      if (currentIndex < listStartIndex)
-        --listStartIndex;
-      lastButtonPress = now;
-    } else if (!isDetailView && digitalRead(BTN_DOWN) == LOW &&
-               currentIndex < (int)skimmerDevices.size() - 1) {
-      ++currentIndex;
-      if (currentIndex >= listStartIndex + 5)
-        ++listStartIndex;
-      lastButtonPress = now;
-    } else if (!isDetailView && digitalRead(BTN_RIGHT) == LOW &&
-               !skimmerDevices.empty()) {
-      isDetailView = true;
-      lastButtonPress = now;
-    } else if (digitalRead(BTN_BACK) == LOW) {
-      isDetailView = false;
-      lastButtonPress = now;
-    } else if (digitalRead(BTN_CENTER) == LOW) {
-      lastButtonPress = now;
-      return;
+    if (!isScanning && scanCompleted && now - lastScanTime > scanInterval) {
+        if (skimmerDevices.size() >= MAX_DEVICES) {
+            std::sort(skimmerDevices.begin(), skimmerDevices.end(),
+                    [](const SkimmerDeviceData &a, const SkimmerDeviceData &b) {
+                        if (a.lastSeen != b.lastSeen) {
+                            return a.lastSeen < b.lastSeen;
+                        }
+                        return a.rssi < b.rssi;
+                    });
+            
+            int devicesToRemove = MAX_DEVICES / 4;
+            if (devicesToRemove > 0) {
+                skimmerDevices.erase(skimmerDevices.begin(), 
+                                    skimmerDevices.begin() + devicesToRemove);
+            }
+            
+            currentIndex = listStartIndex = 0;
+        }
+        
+        scanCompleted = false;
+        isScanning = true;
+        esp_ble_gap_start_scanning(8);
+        lastScanTime = now;
+        return;
     }
-  }
 
-  if (skimmerDevices.empty()) {
-    currentIndex = listStartIndex = 0;
-    isDetailView = false;
-  } else {
-    currentIndex = constrain(currentIndex, 0, (int)skimmerDevices.size() - 1);
-    listStartIndex = constrain(listStartIndex, 0, max(0, (int)skimmerDevices.size() - 5));
-  }
+    if (scanCompleted && now - lastButtonPress > debounceTime) {
+        if (!isDetailView && digitalRead(BTN_UP) == LOW && currentIndex > 0) {
+            --currentIndex;
+            if (currentIndex < listStartIndex)
+                --listStartIndex;
+            lastButtonPress = now;
+        } else if (!isDetailView && digitalRead(BTN_DOWN) == LOW &&
+                   currentIndex < (int)skimmerDevices.size() - 1) {
+            ++currentIndex;
+            if (currentIndex >= listStartIndex + 5)
+                ++listStartIndex;
+            lastButtonPress = now;
+        } else if (!isDetailView && digitalRead(BTN_RIGHT) == LOW &&
+                   !skimmerDevices.empty()) {
+            isDetailView = true;
+            lastButtonPress = now;
+        } else if (digitalRead(BTN_BACK) == LOW) {
+            isDetailView = false;
+            lastButtonPress = now;
+        }
+    }
 
-  u8g2.clearBuffer();
-  if (showingRefresh) {
-    u8g2.drawStr(0, 10, "Refreshing");
-    u8g2.drawStr(0, 20, "Skimmers...");
-    u8g2.sendBuffer();
-  } else if (skimmerDevices.empty()) {
-    u8g2.drawStr(0, 10, "Scanning for");
-    u8g2.drawStr(0, 20, "Card Skimmers...");
-    u8g2.drawStr(0, 35, "Nearby: n/a");
-    u8g2.drawStr(0, 50, "Press CENTER to exit");
-  } else if (isDetailView) {
-    auto &dev = skimmerDevices[currentIndex];
-    u8g2.setFont(u8g2_font_5x8_tr);
-    char buf[32];
-    snprintf(buf, sizeof(buf), "Name: %s", dev.name);
-    u8g2.drawStr(0, 10, buf);
-    snprintf(buf, sizeof(buf), "MAC: %s", dev.address);
-    u8g2.drawStr(0, 20, buf);
-    snprintf(buf, sizeof(buf), "RSSI: %d dBm", dev.rssi);
-    u8g2.drawStr(0, 30, buf);
-    snprintf(buf, sizeof(buf), "Age: %lus", (millis() - dev.lastSeen) / 1000);
-    u8g2.drawStr(0, 40, buf);
-    u8g2.drawStr(0, 60, "Press LEFT to go back");
-  } else {
+    if (skimmerDevices.empty()) {
+        currentIndex = listStartIndex = 0;
+        isDetailView = false;
+    } else {
+        currentIndex = constrain(currentIndex, 0, (int)skimmerDevices.size() - 1);
+        listStartIndex =
+            constrain(listStartIndex, 0, max(0, (int)skimmerDevices.size() - 5));
+    }
+
+    u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_6x10_tr);
-    char header[32];
-    snprintf(header, sizeof(header), "Skimmers: %d/%d",
-             (int)skimmerDevices.size(), MAX_DEVICES);
-    u8g2.drawStr(0, 10, header);
+    
+    if (skimmerDevices.empty()) {
+        u8g2.drawStr(0, 10, "No skimmers found");
+        u8g2.setFont(u8g2_font_5x8_tr);
+        char timeStr[32];
+        unsigned long timeLeft = (scanInterval - (now - lastScanTime)) / 1000;
+        snprintf(timeStr, sizeof(timeStr), "Scanning in %lus", timeLeft);
+        u8g2.drawStr(0, 30, timeStr);
+        u8g2.drawStr(0, 45, "Press SEL to exit");
+    } else if (isDetailView && !skimmerDevices.empty() && currentIndex >= 0 && currentIndex < (int)skimmerDevices.size()) {
+        auto &dev = skimmerDevices[currentIndex];
+        u8g2.setFont(u8g2_font_5x8_tr);
+        char buf[32];
+        
+        snprintf(buf, sizeof(buf), "Name: %s", dev.name);
+        u8g2.drawStr(0, 10, buf);
+        
+        snprintf(buf, sizeof(buf), "MAC: %s", dev.address);
+        u8g2.drawStr(0, 20, buf);
+        
+        snprintf(buf, sizeof(buf), "RSSI: %d dBm", dev.rssi);
+        u8g2.drawStr(0, 30, buf);
+        
+        snprintf(buf, sizeof(buf), "Age: %lus", (millis() - dev.lastSeen) / 1000);
+        u8g2.drawStr(0, 40, buf);
+        
+        u8g2.drawStr(0, 60, "Press LEFT to go back");
+    } else {
+        char header[32];
+        snprintf(header, sizeof(header), "Skimmers: %d/%d",
+                 (int)skimmerDevices.size(), MAX_DEVICES);
+        u8g2.drawStr(0, 10, header);
 
-    for (int i = 0; i < 5; ++i) {
-      int idx = listStartIndex + i;
-      if (idx >= (int)skimmerDevices.size())
-        break;
-      auto &d = skimmerDevices[idx];
-      if (idx == currentIndex)
-        u8g2.drawStr(0, 20 + i * 10, ">");
-      char line[32];
-      snprintf(line, sizeof(line), "%.8s | RSSI %d",
-               d.name[0] ? d.name : "Skimmer", d.rssi);
-      u8g2.drawStr(10, 20 + i * 10, line);
+        for (int i = 0; i < 5; ++i) {
+            int idx = listStartIndex + i;
+            if (idx >= (int)skimmerDevices.size())
+                break;
+            
+            auto &d = skimmerDevices[idx];
+            if (idx == currentIndex)
+                u8g2.drawStr(0, 20 + i * 10, ">");
+            
+            char line[32];
+            snprintf(line, sizeof(line), "%.8s | RSSI %d",
+                     d.name[0] ? d.name : "Skimmer", d.rssi);
+            u8g2.drawStr(10, 20 + i * 10, line);
+        }
     }
-  }
-  u8g2.sendBuffer();
+    u8g2.sendBuffer();
 }

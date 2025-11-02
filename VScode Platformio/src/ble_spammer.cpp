@@ -8,8 +8,9 @@
 #include "../include/sleep_manager.h"
 #include <U8g2lib.h>
 #include <Arduino.h>
-#include <BLEDevice.h>
-#include <esp_gap_ble_api.h>
+#include "esp_bt.h"
+#include "esp_gap_ble_api.h"
+#include "esp_bt_main.h"
 #include <string.h>
 #include <esp_system.h>
     
@@ -20,6 +21,8 @@ static BleSpamMode bleSpamMode = BLE_SPAM_MENU;
 static int menuSelection = 0;
 static unsigned long lastButtonPress = 0;
 const unsigned long debounceDelay = 200;
+static bool bleInitialized = false;
+static bool isCurrentlyAdvertising = false;
 
 // BLE advertising parameters (non-connectable)
 static esp_ble_adv_params_t adv_params = {
@@ -218,10 +221,12 @@ static void advertiseDevice(const char* chosenName) {
     if (now - lastAdv < 15) {
         delay(15 - (now - lastAdv));
     }
-    lastAdv = millis();
 
-    esp_ble_gap_stop_advertising();
-    delay(10);
+    if (isCurrentlyAdvertising) {
+        esp_ble_gap_stop_advertising();
+        delay(5);
+        isCurrentlyAdvertising = false;
+    }
 
     esp_bd_addr_t randAddr;
     for (int i = 0; i < 6; i++) randAddr[i] = random(0,256);
@@ -235,8 +240,11 @@ static void advertiseDevice(const char* chosenName) {
         esp_ble_gap_config_adv_data_raw(packet, size);
         free(packet);
     }
-    delay(10);
+    
+    delay(5);
     esp_ble_gap_start_advertising(&adv_params);
+    isCurrentlyAdvertising = true;
+    lastAdv = millis();
 }
     
 void bleSpamSetup() {
@@ -246,12 +254,26 @@ void bleSpamSetup() {
     pinMode(BUTTON_PIN_RIGHT, INPUT_PULLUP);
     pinMode(BUTTON_PIN_LEFT, INPUT_PULLUP);
 
-    BLEDevice::init("nyanBOX BLE Spammer");
+    if (!btStarted()) {
+        btStart();
+    }
+
+    esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
+    if (bt_state == ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+        esp_bluedroid_init();
+    }
+    if (bt_state != ESP_BLUEDROID_STATUS_ENABLED) {
+        esp_bluedroid_enable();
+    }
+
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P9);
+    
     esp_ble_gap_register_callback([](esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param){});
 
+    bleInitialized = true;
+    isCurrentlyAdvertising = false;
     delay(100);
 
     bleSpamMode = BLE_SPAM_MENU;
@@ -319,8 +341,11 @@ void bleSpamLoop() {
             }
 
             if (left && now - lastButtonPress > debounceDelay) {
-                esp_ble_gap_stop_advertising();
-                delay(100);
+                if (isCurrentlyAdvertising) {
+                    esp_ble_gap_stop_advertising();
+                    isCurrentlyAdvertising = false;
+                    delay(50);
+                }
                 bleSpamMode = BLE_SPAM_MENU;
                 lastButtonPress = now;
             }
@@ -333,8 +358,11 @@ void bleSpamLoop() {
             }
 
             if (left && now - lastButtonPress > debounceDelay) {
-                esp_ble_gap_stop_advertising();
-                delay(100);
+                if (isCurrentlyAdvertising) {
+                    esp_ble_gap_stop_advertising();
+                    isCurrentlyAdvertising = false;
+                    delay(50);
+                }
                 bleSpamMode = BLE_SPAM_MENU;
                 lastButtonPress = now;
             }
@@ -350,8 +378,11 @@ void bleSpamLoop() {
             }
 
             if (left && now - lastButtonPress > debounceDelay) {
-                esp_ble_gap_stop_advertising();
-                delay(100);
+                if (isCurrentlyAdvertising) {
+                    esp_ble_gap_stop_advertising();
+                    isCurrentlyAdvertising = false;
+                    delay(50);
+                }
                 bleSpamMode = BLE_SPAM_MENU;
                 nextIdx = 0;
                 lastButtonPress = now;
@@ -372,8 +403,11 @@ void bleSpamLoop() {
             }
 
             if (left && now - lastButtonPress > debounceDelay) {
-                esp_ble_gap_stop_advertising();
-                delay(100);
+                if (isCurrentlyAdvertising) {
+                    esp_ble_gap_stop_advertising();
+                    isCurrentlyAdvertising = false;
+                    delay(50);
+                }
                 bleSpamMode = BLE_SPAM_MENU;
                 nextIdx = 0;
                 lastButtonPress = now;

@@ -6,7 +6,7 @@
 #ifndef blescan_H
 #define blescan_H
 
-#include <BLEDevice.h>
+#include <vector>
 #include <U8g2lib.h>
 #include "neopixel.h"
 #include "pindefs.h"

@@ -7,9 +7,7 @@
 #ifndef BLE_SPAM_H
 #define BLE_SPAM_H
 
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEScan.h>
+#include <esp_bt.h>
 
 extern bool isBleSpamming;
 

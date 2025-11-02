@@ -7,6 +7,9 @@
 #include "../include/sleep_manager.h"
 #include "../include/pindefs.h"
 #include <Arduino.h>
+#include "esp_bt.h"
+#include "esp_gap_ble_api.h"
+#include "esp_bt_main.h"
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 extern Adafruit_NeoPixel pixels;
@@ -15,10 +18,8 @@ extern Adafruit_NeoPixel pixels;
 #define DEVICE_PREV_BTN BUTTON_PIN_LEFT
 #define ADV_CONTROL_BTN BUTTON_PIN_UP
 
-BLEAdvertising *pAdvertising;
-std::string devices_uuid = "00003082-0000-1000-9000-00805f9b34fb";
-
 bool isAdvertising = false;
+bool bleInitialized = false;
 unsigned long lastDebounce = 0;
 const unsigned long debounceDelay = 500;
 const unsigned long packetDelay = 1000;
@@ -26,6 +27,15 @@ const unsigned long packetDelay = 1000;
 int deviceType = 0;
 int deviceIndex = 0;
 const int DEVICE_COUNT = 17;
+
+static esp_ble_adv_params_t adv_params = {
+    .adv_int_min        = 0x20,
+    .adv_int_max        = 0x40,
+    .adv_type           = ADV_TYPE_NONCONN_IND,
+    .own_addr_type      = BLE_ADDR_TYPE_RANDOM,
+    .channel_map        = ADV_CHNL_ALL,
+    .adv_filter_policy  = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+};
 
 // Payload data
 const uint8_t DEVICES[][31] = {
@@ -97,12 +107,6 @@ const uint8_t DEVICES[][31] = {
     {0x1e, 0xff, 0x4c, 0x00, 0x07, 0x19, 0x07, 0x16, 0x20, 0x75, 0xaa,
      0x30, 0x01, 0x00, 0x00, 0x45, 0x12, 0x12, 0x12, 0x00, 0x00, 0x00,
      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
-
-BLEAdvertisementData getAdvertismentData() {
-  BLEAdvertisementData d;
-  d.addData(std::string((char *)DEVICES[deviceIndex], 31));
-  return d;
-}
 
 void updateDisplay() {
   u8g2.clearBuffer();
@@ -194,7 +198,7 @@ void toggleAdvertising() {
   lastDebounce = now;
   isAdvertising = !isAdvertising;
   if (!isAdvertising) {
-    pAdvertising->stop();
+    esp_ble_gap_stop_advertising();
   }
   updateDisplay();
 }
@@ -206,10 +210,19 @@ void spooferSetup() {
 
   randomSeed((uint32_t)esp_random());
 
-  BLEDevice::init("nyanBOX Spoofer");
-  BLEServer *pServer = BLEDevice::createServer();
-  pAdvertising = pServer->getAdvertising();
-  pAdvertising->setAdvertisementType(ADV_TYPE_NONCONN_IND);
+  if (!btStarted()) {
+    btStart();
+  }
+
+  esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
+  if (bt_state == ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+    esp_bluedroid_init();
+  }
+  if (bt_state != ESP_BLUEDROID_STATUS_ENABLED) {
+    esp_bluedroid_enable();
+  }
+
+  bleInitialized = true;
 
   updateDisplay();
 }
@@ -235,17 +248,21 @@ void spooferLoop() {
       deviceIndex = deviceType - 1;
     }
 
+    esp_ble_gap_stop_advertising();
+    delay(10);
+
     esp_bd_addr_t randAddr;
     for (int i = 0; i < 6; i++)
       randAddr[i] = random(256);
     randAddr[0] = (randAddr[0] & 0x3F) | 0xC0;
-    pAdvertising->setDeviceAddress(randAddr, BLE_ADDR_TYPE_RANDOM);
+    esp_ble_gap_set_rand_addr(randAddr);
 
-    auto advData = getAdvertismentData();
-    pAdvertising->setAdvertisementData(advData);
-    pAdvertising->start();
+    esp_ble_gap_config_adv_data_raw((uint8_t*)DEVICES[deviceIndex], 31);
+    
+    delay(10);
+    esp_ble_gap_start_advertising(&adv_params);
     delay(packetDelay);
-    pAdvertising->stop();
+    esp_ble_gap_stop_advertising();
   }
 
   delay(50);

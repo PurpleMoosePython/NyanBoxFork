@@ -7,6 +7,10 @@
 
 #include "../include/flipperzero_detector.h"
 #include "../include/sleep_manager.h"
+#include "esp_bt.h"
+#include "esp_gap_ble_api.h"
+#include "esp_bt_main.h"
+#include <vector>
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 
@@ -35,130 +39,154 @@ bool isDetailView = false;
 unsigned long lastButtonPress = 0;
 const unsigned long debounceTime = 200;
 
-static BLEScan *pBLEScan;
 static bool isScanning = false;
 static unsigned long lastScanTime = 0;
 const unsigned long scanInterval = 30000;
 
-static int flipperCallbackCount = 0;
-static unsigned long lastCallbackTime = 0;
+static bool bleInitialized = false;
+static bool scanCompleted = false;
 
-const char* getFlipperColor(BLEAdvertisedDevice &device) {
-  if (!device.haveServiceUUID()) {
-    return "Unknown";
-  }
+static esp_ble_scan_params_t ble_scan_params = {
+    .scan_type              = BLE_SCAN_TYPE_ACTIVE,
+    .own_addr_type          = BLE_ADDR_TYPE_PUBLIC,
+    .scan_filter_policy     = BLE_SCAN_FILTER_ALLOW_ALL,
+    .scan_interval          = 0x100,
+    .scan_window            = 0xA0,
+    .scan_duplicate         = BLE_SCAN_DUPLICATE_DISABLE
+};
 
-  BLEUUID primaryUUID = device.getServiceUUID();
-  std::string uuidStr = primaryUUID.toString();
-
-  for (auto& c : uuidStr) c = tolower(c);
-
-  if (uuidStr == "00003081-0000-1000-8000-00805f9b34fb") {
-    return "Black";
-  }
-  if (uuidStr == "00003082-0000-1000-8000-00805f9b34fb") {
-    return "White";
-  }
-  if (uuidStr == "00003083-0000-1000-8000-00805f9b34fb") {
-    return "Transparent";
-  }
-
-  if (uuidStr.find("0000308") == 0 &&
-      uuidStr.find("0000-1000-8000-00805f9b34fb") != std::string::npos) {
-    return "Generic";
-  }
-
-  return "Unknown";
+static void bda_to_string(uint8_t *bda, char *str, size_t size) {
+    if (bda == NULL || str == NULL || size < 18) {
+        return;
+    }
+    snprintf(str, size, "%02x:%02x:%02x:%02x:%02x:%02x",
+             bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
 }
 
-class MyFlipperAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
-  void onResult(BLEAdvertisedDevice advertisedDevice) override {
-    flipperCallbackCount++;
-
-    unsigned long now = millis();
-    if (now - lastCallbackTime < 50) {
-      return;
+const char* getFlipperColorFromUUID(uint8_t *adv_data, uint8_t adv_data_len) {
+    // Flipper Zero uses 16-bit Service UUIDs:
+    // Black: 0x3081, White: 0x3082, Transparent: 0x3083
+    
+    uint8_t uuid_len = 0;
+    uint8_t *uuid_data = esp_ble_resolve_adv_data(adv_data, ESP_BLE_AD_TYPE_16SRV_CMPL, &uuid_len);
+    
+    if (uuid_data != NULL && uuid_len >= 2) {
+        for (int i = 0; i + 2 <= uuid_len; i += 2) {
+            uint16_t service_uuid = uuid_data[i] | (uuid_data[i+1] << 8);
+            
+            if (service_uuid == 0x3081) return "Black";
+            if (service_uuid == 0x3082) return "White";
+            if (service_uuid == 0x3083) return "Transparent";
+            if ((service_uuid & 0xFFF0) == 0x3080) return "Generic";
+        }
     }
-    lastCallbackTime = now;
+    
+    uuid_len = 0;
+    uuid_data = esp_ble_resolve_adv_data(adv_data, ESP_BLE_AD_TYPE_16SRV_PART, &uuid_len);
+    
+    if (uuid_data != NULL && uuid_len >= 2) {
+        for (int i = 0; i + 2 <= uuid_len; i += 2) {
+            uint16_t service_uuid = uuid_data[i] | (uuid_data[i+1] << 8);
+            
+            if (service_uuid == 0x3081) return "Black";
+            if (service_uuid == 0x3082) return "White";
+            if (service_uuid == 0x3083) return "Transparent";
+            if ((service_uuid & 0xFFF0) == 0x3080) return "Generic";
+        }
+    }
+    
+    return "Unknown";
+}
 
-    if (flipperCallbackCount > 500 || flipperZeroDevices.size() >= MAX_DEVICES) {
-      if (isScanning && pBLEScan) {
-        pBLEScan->stop();
-        isScanning = false;
-      }
-      return;
+static void process_scan_result(esp_ble_gap_cb_param_t *scan_result) {
+    if (flipperZeroDevices.size() >= MAX_DEVICES) {
+        return;
     }
 
-    if (flipperZeroDevices.size() > 80 && flipperCallbackCount % 2 != 0) return;
-
-    BLEAddress addr = advertisedDevice.getAddress();
-    const char* addrCStr = addr.toString().c_str();
-
+    uint8_t *bda = scan_result->scan_rst.bda;
     char addrStr[18];
-    strncpy(addrStr, addrCStr, 17);
-    addrStr[17] = '\0';
+    bda_to_string(bda, addrStr, sizeof(addrStr));
 
     if (strlen(addrStr) < 12) return;
 
-    bool isFlipperZero = (strncasecmp(addrStr, "80:e1:26", 8) == 0) ||
-                         (strncasecmp(addrStr, "80:e1:27", 8) == 0) ||
-                         (strncasecmp(addrStr, "0c:fa:22", 8) == 0);
+    bool isFlipperByMAC = (strncasecmp(addrStr, "80:e1:26", 8) == 0) ||
+                          (strncasecmp(addrStr, "80:e1:27", 8) == 0) ||
+                          (strncasecmp(addrStr, "0c:fa:22", 8) == 0);
     
-    if (!isFlipperZero) {
-      return;
+    if (!isFlipperByMAC) {
+        return;
     }
 
-    int8_t deviceRSSI = advertisedDevice.getRSSI();
+    const char* detectedColor = getFlipperColorFromUUID(scan_result->scan_rst.ble_adv, 
+                                                         scan_result->scan_rst.adv_data_len);
 
-    const char* detectedColor = getFlipperColor(advertisedDevice);
+    for (size_t i = 0; i < flipperZeroDevices.size(); i++) {
+        if (strcmp(flipperZeroDevices[i].address, addrStr) == 0) {
+            flipperZeroDevices[i].rssi = scan_result->scan_rst.rssi;
+            flipperZeroDevices[i].lastSeen = millis();
+            
+            if (strcmp(detectedColor, "Unknown") != 0 && strcmp(detectedColor, "Generic") != 0) {
+                strncpy(flipperZeroDevices[i].color, detectedColor, 15);
+                flipperZeroDevices[i].color[15] = '\0';
+            }
+            
+            if (!flipperZeroDevices[i].hasName) {
+                uint8_t adv_name_len = 0;
+                uint8_t *adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
+                                                    ESP_BLE_AD_TYPE_NAME_CMPL,
+                                                    &adv_name_len);
+                
+                if (adv_name == NULL) {
+                    adv_name_len = 0;
+                    adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
+                                                        ESP_BLE_AD_TYPE_NAME_SHORT,
+                                                        &adv_name_len);
+                }
 
-    for (int i = 0; i < flipperZeroDevices.size(); i++) {
-      if (strcmp(flipperZeroDevices[i].address, addrStr) == 0) {
-        flipperZeroDevices[i].rssi = deviceRSSI;
-        flipperZeroDevices[i].lastSeen = millis();
-
-        if (strcmp(detectedColor, "Unknown") != 0 && strcmp(detectedColor, "Generic") != 0) {
-          strncpy(flipperZeroDevices[i].color, detectedColor, 15);
-          flipperZeroDevices[i].color[15] = '\0';
+                if (adv_name != NULL && adv_name_len > 0 && adv_name_len < 32) {
+                    memcpy(flipperZeroDevices[i].name, adv_name, adv_name_len);
+                    flipperZeroDevices[i].name[adv_name_len] = '\0';
+                    flipperZeroDevices[i].hasName = true;
+                }
+            }
+            
+            std::sort(flipperZeroDevices.begin(), flipperZeroDevices.end(),
+                      [](const FlipperZeroDeviceData &a, const FlipperZeroDeviceData &b) {
+                        return a.rssi > b.rssi;
+                      });
+            return;
         }
-
-        if (!flipperZeroDevices[i].hasName && advertisedDevice.haveName()) {
-          std::string nameStd = advertisedDevice.getName();
-          if (nameStd.length() > 0 && nameStd.length() < 32) {
-            strncpy(flipperZeroDevices[i].name, nameStd.c_str(), 31);
-            flipperZeroDevices[i].name[31] = '\0';
-            flipperZeroDevices[i].hasName = true;
-          }
-        }
-
-        std::sort(flipperZeroDevices.begin(), flipperZeroDevices.end(),
-                  [](const FlipperZeroDeviceData &a, const FlipperZeroDeviceData &b) {
-                    return a.rssi > b.rssi;
-                  });
-        return;
-      }
     }
 
     FlipperZeroDeviceData newDev = {};
     strncpy(newDev.address, addrStr, 17);
     newDev.address[17] = '\0';
-    newDev.rssi = deviceRSSI;
+    newDev.rssi = scan_result->scan_rst.rssi;
     newDev.lastSeen = millis();
     newDev.isFlipperZero = true;
-
+    
     strncpy(newDev.color, detectedColor, 15);
     newDev.color[15] = '\0';
-
+    
     strcpy(newDev.name, "Flipper Zero");
     newDev.hasName = false;
 
-    if (advertisedDevice.haveName()) {
-      std::string nameStd = advertisedDevice.getName();
-      if (nameStd.length() > 0 && nameStd.length() < 32) {
-        strncpy(newDev.name, nameStd.c_str(), 31);
-        newDev.name[31] = '\0';
+    uint8_t adv_name_len = 0;
+    uint8_t *adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
+                                        ESP_BLE_AD_TYPE_NAME_CMPL,
+                                        &adv_name_len);
+    
+    if (adv_name == NULL) {
+        adv_name_len = 0;
+        adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
+                                            ESP_BLE_AD_TYPE_NAME_SHORT,
+                                            &adv_name_len);
+    }
+
+    if (adv_name != NULL && adv_name_len > 0 && adv_name_len < 32) {
+        memcpy(newDev.name, adv_name, adv_name_len);
+        newDev.name[adv_name_len] = '\0';
         newDev.hasName = true;
-      }
     }
 
     flipperZeroDevices.push_back(newDev);
@@ -167,166 +195,200 @@ class MyFlipperAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
               [](const FlipperZeroDeviceData &a, const FlipperZeroDeviceData &b) {
                 return a.rssi > b.rssi;
               });
-  }
-};
+}
 
-static MyFlipperAdvertisedDeviceCallbacks flipperCallbacks;
+static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
+    switch (event) {
+    case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT:
+        if (param->scan_param_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+            isScanning = true;
+            esp_ble_gap_start_scanning(8);
+            lastScanTime = millis();
+        }
+        break;
+    case ESP_GAP_BLE_SCAN_START_COMPLETE_EVT:
+        if (param->scan_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+            isScanning = false;
+        }
+        break;
+    case ESP_GAP_BLE_SCAN_RESULT_EVT:
+        switch (param->scan_rst.search_evt) {
+        case ESP_GAP_SEARCH_INQ_RES_EVT:
+            process_scan_result(param);
+            break;
+        case ESP_GAP_SEARCH_INQ_CMPL_EVT:
+            isScanning = false;
+            lastScanTime = millis();
+            scanCompleted = true;
+            break;
+        default:
+            break;
+        }
+        break;
+    case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
+        isScanning = false;
+        scanCompleted = true;
+        break;
+    default:
+        break;
+    }
+}
 
 void flipperZeroDetectorSetup() {
-  flipperZeroDevices.clear();
-  flipperZeroDevices.reserve(MAX_DEVICES);
-  currentIndex = listStartIndex = 0;
-  isDetailView = false;
-  lastButtonPress = 0;
-  isScanning = false;
-  flipperCallbackCount = 0;
-  lastCallbackTime = 0;
+    flipperZeroDevices.clear();
+    flipperZeroDevices.reserve(MAX_DEVICES);
+    currentIndex = listStartIndex = 0;
+    isDetailView = false;
+    lastButtonPress = 0;
+    isScanning = true;
+    scanCompleted = false;
 
-  u8g2.begin();
-  u8g2.setFont(u8g2_font_6x10_tr);
-  u8g2.clearBuffer();
-  u8g2.drawStr(0, 10, "Scanning for");
-  u8g2.drawStr(0, 20, "Flippers...");
-  u8g2.sendBuffer();
+    u8g2.begin();
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.clearBuffer();
+    u8g2.drawStr(0, 10, "Scanning for");
+    u8g2.drawStr(0, 20, "Flippers...");
+    u8g2.sendBuffer();
 
-  BLEDevice::init("FlipperZeroDetector");
-  pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(&flipperCallbacks);
-  pBLEScan->setActiveScan(true);
-  pBLEScan->setInterval(1000);
-  pBLEScan->setWindow(200);
-  
-  pBLEScan->start(5, false);
-  isScanning = true;
-  lastScanTime = millis();
+    if (!btStarted()) {
+        btStart();
+    }
 
-  pinMode(BTN_UP, INPUT_PULLUP);
-  pinMode(BTN_DOWN, INPUT_PULLUP);
-  pinMode(BTN_RIGHT, INPUT_PULLUP);
-  pinMode(BTN_BACK, INPUT_PULLUP);
-  pinMode(BTN_CENTER, INPUT_PULLUP);
+    esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
+    if (bt_state == ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+        esp_bluedroid_init();
+    }
+    if (bt_state != ESP_BLUEDROID_STATUS_ENABLED) {
+        esp_bluedroid_enable();
+    }
+
+    esp_ble_gap_register_callback(esp_gap_cb);
+    esp_ble_gap_set_scan_params(&ble_scan_params);
+
+    bleInitialized = true;
+
+    pinMode(BTN_UP, INPUT_PULLUP);
+    pinMode(BTN_DOWN, INPUT_PULLUP);
+    pinMode(BTN_RIGHT, INPUT_PULLUP);
+    pinMode(BTN_BACK, INPUT_PULLUP);
+    pinMode(BTN_CENTER, INPUT_PULLUP);
 }
 
 void flipperZeroDetectorLoop() {
-  unsigned long now = millis();
+    if (!bleInitialized) return;
 
-  if (now - lastScanTime > 10000) {
-    flipperCallbackCount = 0;
-  }
+    unsigned long now = millis();
 
-  if (isScanning && now - lastScanTime > 5000) {
-    pBLEScan->stop();
-    isScanning = false;
-    flipperCallbackCount = 0;
-    lastScanTime = now;
-  } 
-  else if (!isScanning && now - lastScanTime > scanInterval) {
-    if (flipperZeroDevices.size() >= MAX_DEVICES) {
-      std::sort(flipperZeroDevices.begin(), flipperZeroDevices.end(),
-                [](const FlipperZeroDeviceData &a, const FlipperZeroDeviceData &b) {
-                  if (a.lastSeen != b.lastSeen) {
-                    return a.lastSeen < b.lastSeen;
-                  }
-                  return a.rssi < b.rssi;
-                });
-      
-      int devicesToRemove = MAX_DEVICES / 4;
-      if (devicesToRemove > 0) {
-        flipperZeroDevices.erase(flipperZeroDevices.begin(), 
-                                flipperZeroDevices.begin() + devicesToRemove);
-      }
-      
-      currentIndex = listStartIndex = 0;
+    if (isScanning) {
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_6x10_tr);
+        u8g2.drawStr(0, 10, "Scanning for");
+        u8g2.drawStr(0, 20, "Flippers...");
+        u8g2.sendBuffer();
+        return;
     }
-    
-    flipperCallbackCount = 0;
-    pBLEScan->start(5, false);
-    isScanning = true;
-    lastScanTime = now;
-  }
 
-  static bool showingRefresh = false;
-  if (!isScanning && now - lastScanTime > scanInterval - 1000) {
-    showingRefresh = true;
-  } else if (isScanning && showingRefresh) {
-    showingRefresh = false;
-  }
-
-  if (now - lastButtonPress > debounceTime) {
-    if (!isDetailView && digitalRead(BTN_UP) == LOW && currentIndex > 0) {
-      --currentIndex;
-      if (currentIndex < listStartIndex)
-        --listStartIndex;
-      lastButtonPress = now;
-    } else if (!isDetailView && digitalRead(BTN_DOWN) == LOW &&
-               currentIndex < (int)flipperZeroDevices.size() - 1) {
-      ++currentIndex;
-      if (currentIndex >= listStartIndex + 5)
-        ++listStartIndex;
-      lastButtonPress = now;
-    } else if (!isDetailView && digitalRead(BTN_RIGHT) == LOW &&
-               !flipperZeroDevices.empty()) {
-      isDetailView = true;
-      lastButtonPress = now;
-    } else if (digitalRead(BTN_BACK) == LOW) {
-      isDetailView = false;
-      lastButtonPress = now;
+    if (!isScanning && scanCompleted && now - lastScanTime > scanInterval) {
+        if (flipperZeroDevices.size() >= MAX_DEVICES) {
+            std::sort(flipperZeroDevices.begin(), flipperZeroDevices.end(),
+                    [](const FlipperZeroDeviceData &a, const FlipperZeroDeviceData &b) {
+                        if (a.lastSeen != b.lastSeen) {
+                            return a.lastSeen < b.lastSeen;
+                        }
+                        return a.rssi < b.rssi;
+                    });
+            
+            int devicesToRemove = MAX_DEVICES / 4;
+            if (devicesToRemove > 0) {
+                flipperZeroDevices.erase(flipperZeroDevices.begin(), 
+                                        flipperZeroDevices.begin() + devicesToRemove);
+            }
+            
+            currentIndex = listStartIndex = 0;
+        }
+        
+        scanCompleted = false;
+        isScanning = true;
+        esp_ble_gap_start_scanning(8);
+        lastScanTime = now;
+        return;
     }
-  }
 
-  if (flipperZeroDevices.empty()) {
-    currentIndex = listStartIndex = 0;
-    isDetailView = false;
-  } else {
-    currentIndex = constrain(currentIndex, 0, (int)flipperZeroDevices.size() - 1);
-    listStartIndex =
-        constrain(listStartIndex, 0, max(0, (int)flipperZeroDevices.size() - 5));
-  }
+    if (scanCompleted && now - lastButtonPress > debounceTime) {
+        if (!isDetailView && digitalRead(BTN_UP) == LOW && currentIndex > 0) {
+            --currentIndex;
+            if (currentIndex < listStartIndex)
+                --listStartIndex;
+            lastButtonPress = now;
+        } else if (!isDetailView && digitalRead(BTN_DOWN) == LOW &&
+                   currentIndex < (int)flipperZeroDevices.size() - 1) {
+            ++currentIndex;
+            if (currentIndex >= listStartIndex + 5)
+                ++listStartIndex;
+            lastButtonPress = now;
+        } else if (!isDetailView && digitalRead(BTN_RIGHT) == LOW &&
+                   !flipperZeroDevices.empty()) {
+            isDetailView = true;
+            lastButtonPress = now;
+        } else if (digitalRead(BTN_BACK) == LOW) {
+            isDetailView = false;
+            lastButtonPress = now;
+        }
+    }
 
-  u8g2.clearBuffer();
-  if (showingRefresh) {
-    u8g2.drawStr(0, 10, "Refreshing");
-    u8g2.drawStr(0, 20, "Flippers...");
-    u8g2.sendBuffer();
-  } else if (flipperZeroDevices.empty()) {
-    u8g2.drawStr(0, 10, "Scanning for");
-    u8g2.drawStr(0, 20, "Flippers...");
-    u8g2.drawStr(0, 35, "Nearby: n/a");
-    u8g2.drawStr(0, 50, "Press CENTER to exit");
-  } else if (isDetailView) {
-    auto &dev = flipperZeroDevices[currentIndex];
-    u8g2.setFont(u8g2_font_5x8_tr);
-    char buf[32];
-    snprintf(buf, sizeof(buf), "Name: %s", dev.name);
-    u8g2.drawStr(0, 10, buf);
-    snprintf(buf, sizeof(buf), "MAC: %s", dev.address);
-    u8g2.drawStr(0, 20, buf);
-    snprintf(buf, sizeof(buf), "Color: %s", dev.color);
-    u8g2.drawStr(0, 30, buf);
-    snprintf(buf, sizeof(buf), "RSSI: %d dBm", dev.rssi);
-    u8g2.drawStr(0, 40, buf);
-    snprintf(buf, sizeof(buf), "Age: %lus", (millis() - dev.lastSeen) / 1000);
-    u8g2.drawStr(0, 50, buf);
-    u8g2.drawStr(0, 60, "Press LEFT to go back");
-  } else {
+    if (flipperZeroDevices.empty()) {
+        currentIndex = listStartIndex = 0;
+        isDetailView = false;
+    } else {
+        currentIndex = constrain(currentIndex, 0, (int)flipperZeroDevices.size() - 1);
+        listStartIndex =
+            constrain(listStartIndex, 0, max(0, (int)flipperZeroDevices.size() - 5));
+    }
+
+    u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_6x10_tr);
-    char header[32];
-    snprintf(header, sizeof(header), "Flippers: %d/%d",
-             (int)flipperZeroDevices.size(), MAX_DEVICES);
-    u8g2.drawStr(0, 10, header);
+    
+    if (flipperZeroDevices.empty()) {
+        u8g2.drawStr(0, 10, "No Flippers found");
+        u8g2.setFont(u8g2_font_5x8_tr);
+        char timeStr[32];
+        unsigned long timeLeft = (scanInterval - (now - lastScanTime)) / 1000;
+        snprintf(timeStr, sizeof(timeStr), "Scanning in %lus", timeLeft);
+        u8g2.drawStr(0, 30, timeStr);
+        u8g2.drawStr(0, 45, "Press SEL to exit");
+    } else if (isDetailView) {
+        auto &dev = flipperZeroDevices[currentIndex];
+        u8g2.setFont(u8g2_font_5x8_tr);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Name: %s", dev.name);
+        u8g2.drawStr(0, 10, buf);
+        snprintf(buf, sizeof(buf), "MAC: %s", dev.address);
+        u8g2.drawStr(0, 20, buf);
+        snprintf(buf, sizeof(buf), "Color: %s", dev.color);
+        u8g2.drawStr(0, 30, buf);
+        snprintf(buf, sizeof(buf), "RSSI: %d dBm", dev.rssi);
+        u8g2.drawStr(0, 40, buf);
+        snprintf(buf, sizeof(buf), "Age: %lus", (millis() - dev.lastSeen) / 1000);
+        u8g2.drawStr(0, 50, buf);
+        u8g2.drawStr(0, 60, "Press LEFT to go back");
+    } else {
+        char header[32];
+        snprintf(header, sizeof(header), "Flippers: %d/%d",
+                 (int)flipperZeroDevices.size(), MAX_DEVICES);
+        u8g2.drawStr(0, 10, header);
 
-    for (int i = 0; i < 5; ++i) {
-      int idx = listStartIndex + i;
-      if (idx >= (int)flipperZeroDevices.size())
-        break;
-      auto &d = flipperZeroDevices[idx];
-      if (idx == currentIndex)
-        u8g2.drawStr(0, 20 + i * 10, ">");
-      char line[32];
-      snprintf(line, sizeof(line), "%.8s | RSSI %d",
-               d.name[0] ? d.name : "Flipper", d.rssi);
-      u8g2.drawStr(10, 20 + i * 10, line);
+        for (int i = 0; i < 5; ++i) {
+            int idx = listStartIndex + i;
+            if (idx >= (int)flipperZeroDevices.size())
+                break;
+            auto &d = flipperZeroDevices[idx];
+            if (idx == currentIndex)
+                u8g2.drawStr(0, 20 + i * 10, ">");
+            char line[32];
+            snprintf(line, sizeof(line), "%.8s | RSSI %d",
+                     d.name[0] ? d.name : "Flipper", d.rssi);
+            u8g2.drawStr(10, 20 + i * 10, line);
+        }
     }
-  }
-  u8g2.sendBuffer();
+    u8g2.sendBuffer();
 }

@@ -10,6 +10,7 @@
 #include <Adafruit_NeoPixel.h>
 #include <EEPROM.h>
 #include <esp_wifi.h>
+#include "esp_bt_main.h"
 
 #ifdef U8X8_HAVE_HW_I2C
 #include <Wire.h>
@@ -308,18 +309,43 @@ void cleanupWiFi() {
 void cleanupRadio() {
   for (auto &r : radios) r.powerDown();
   esp_wifi_stop();
-  delay(50);
-  BLEDevice::deinit();
-  delay(50);
+  delay(100);
+  
+  esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
+  if (bt_state == ESP_BLUEDROID_STATUS_ENABLED) {
+    esp_bluedroid_disable();
+    delay(50);
+  }
+  if (bt_state != ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+    esp_bluedroid_deinit();
+    delay(50);
+  }
+  
+  if (btStarted()) {
+    btStop();
+    delay(50);
+  }
 
   esp_wifi_start();
 }
 
 void cleanupBLE() {
-  esp_ble_gap_stop_advertising();
-  delay(50);
-  BLEDevice::deinit();
-  delay(50);
+  delay(100);
+  
+  esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
+  if (bt_state == ESP_BLUEDROID_STATUS_ENABLED) {
+    esp_bluedroid_disable();
+    delay(50);
+  }
+  if (bt_state != ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+    esp_bluedroid_deinit();
+    delay(50);
+  }
+  
+  if (btStarted()) {
+    btStop();
+    delay(50);
+  }
 }
 
 void noCleanup() {

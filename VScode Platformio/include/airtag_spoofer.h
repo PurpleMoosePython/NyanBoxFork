@@ -7,7 +7,6 @@
 #ifndef AIRTAG_SPOOFER_H
 #define AIRTAG_SPOOFER_H
 
-#include <BLEDevice.h>
 #include <U8g2lib.h>
 #include <vector>
 #include "neopixel.h"

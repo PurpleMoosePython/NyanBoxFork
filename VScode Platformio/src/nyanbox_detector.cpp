@@ -8,6 +8,10 @@
 #include "../include/nyanbox_detector.h"
 #include "../include/nyanbox_common.h"
 #include "../include/sleep_manager.h"
+#include "esp_bt.h"
+#include "esp_gap_ble_api.h"
+#include "esp_bt_main.h"
+#include <vector>
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 
@@ -35,27 +39,40 @@ bool isDetailView = false;
 unsigned long lastButtonPress = 0;
 const unsigned long debounceTime = 200;
 
-static BLEScan *pNyanboxScan = nullptr;
-static bool nyanboxScanning = false;
-static unsigned long nyanboxLastScanTime = 0;
-const unsigned long SCAN_INTERVAL = 30000;
-const unsigned long SCAN_DURATION = 5000;
+static bool isScanning = false;
+static unsigned long lastScanTime = 0;
+const unsigned long scanInterval = 30000;
 
-static int nyanboxCallbackCount = 0;
-static unsigned long lastCallbackTime = 0;
+static bool bleInitialized = false;
+static bool scanCompleted = false;
 
-void parseManufacturerData(const std::string &manufData, uint16_t &level,
-                           char *version) {
-  if (manufData.length() < 8 || manufData[0] != (char)0xFF || manufData[1] != (char)0xFF) {
+static esp_ble_scan_params_t ble_scan_params = {
+    .scan_type              = BLE_SCAN_TYPE_ACTIVE,
+    .own_addr_type          = BLE_ADDR_TYPE_PUBLIC,
+    .scan_filter_policy     = BLE_SCAN_FILTER_ALLOW_ALL,
+    .scan_interval          = 0x100,
+    .scan_window            = 0xA0,
+    .scan_duplicate         = BLE_SCAN_DUPLICATE_DISABLE
+};
+
+static void bda_to_string(uint8_t *bda, char *str, size_t size) {
+    if (bda == NULL || str == NULL || size < 18) {
+        return;
+    }
+    snprintf(str, size, "%02x:%02x:%02x:%02x:%02x:%02x",
+             bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+}
+
+void parseManufacturerData(uint8_t *manufData, uint8_t manufLen, uint16_t &level, char *version) {
+  if (manufData == NULL || manufLen < 8 || manufData[0] != 0xFF || manufData[1] != 0xFF) {
     level = 0;
     strcpy(version, "Unknown");
     return;
   }
 
-  level = ((uint8_t)manufData[2] << 8) | (uint8_t)manufData[3];
-  uint32_t versionNum = ((uint8_t)manufData[4] << 24) |
-                        ((uint8_t)manufData[5] << 16) |
-                        ((uint8_t)manufData[6] << 8) | (uint8_t)manufData[7];
+  level = (manufData[2] << 8) | manufData[3];
+  uint32_t versionNum = (manufData[4] << 24) | (manufData[5] << 16) | 
+                        (manufData[6] << 8) | manufData[7];
 
   int major = versionNum / 10000;
   int minor = (versionNum / 100) % 100;
@@ -69,265 +86,352 @@ void parseManufacturerData(const std::string &manufData, uint16_t &level,
     snprintf(version, 16, "v%d.%d.%d", major, minor, patch);
 }
 
-class NyanboxAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
-  void onResult(BLEAdvertisedDevice advertisedDevice) override {
-    nyanboxCallbackCount++;
-
-    unsigned long now = millis();
-    if (now - lastCallbackTime < 50) {
-      return;
-    }
-    lastCallbackTime = now;
-
-    if (nyanboxCallbackCount > 500 || nyanBoxDevices.size() >= MAX_DEVICES) {
-      if (nyanboxScanning && pNyanboxScan) {
-        pNyanboxScan->stop();
-        nyanboxScanning = false;
-      }
-      return;
-    }
-
-    if (nyanBoxDevices.size() > 80 && nyanboxCallbackCount % 2 != 0) return;
-
-    if (!advertisedDevice.isAdvertisingService(BLEUUID(NYANBOX_SERVICE_UUID)))
-      return;
-
-    BLEAddress addr = advertisedDevice.getAddress();
-    const char *addrCStr = addr.toString().c_str();
-
-    char deviceAddress[18];
-    strncpy(deviceAddress, addrCStr, 17);
-    deviceAddress[17] = '\0';
-
-    int8_t deviceRSSI = advertisedDevice.getRSSI();
-
-    for (auto &dev : nyanBoxDevices) {
-      if (strcmp(dev.address, deviceAddress) == 0) {
-        dev.rssi = deviceRSSI;
-        dev.lastSeen = millis();
-        if (advertisedDevice.haveManufacturerData()) {
-          parseManufacturerData(advertisedDevice.getManufacturerData(),
-                                dev.level, dev.version);
+bool hasNyanboxService(uint8_t *adv_data, uint8_t adv_data_len) {
+    
+    uint8_t uuid_len = 0;
+    uint8_t *uuid_data = esp_ble_resolve_adv_data(adv_data, ESP_BLE_AD_TYPE_128SRV_CMPL, &uuid_len);
+    
+    if (uuid_data != NULL && uuid_len >= 16) {
+        for (int i = 0; i + 16 <= uuid_len; i += 16) {
+            if (uuid_data[i+0] == 0x21 && uuid_data[i+1] == 0x65 &&
+                uuid_data[i+2] == 0x63 && uuid_data[i+3] == 0x69 &&
+                uuid_data[i+4] == 0x76 && uuid_data[i+5] == 0x72 &&
+                uuid_data[i+6] == 0x65 && uuid_data[i+7] == 0x73 &&
+                uuid_data[i+8] == 0x2d && uuid_data[i+9] == 0x58 &&
+                uuid_data[i+10] == 0x4f && uuid_data[i+11] == 0x42 &&
+                uuid_data[i+12] == 0x6e && uuid_data[i+13] == 0x61 &&
+                uuid_data[i+14] == 0x79 && uuid_data[i+15] == 0x6e) {
+                return true;
+            }
         }
+    }
+    
+    uuid_len = 0;
+    uuid_data = esp_ble_resolve_adv_data(adv_data, ESP_BLE_AD_TYPE_128SRV_PART, &uuid_len);
+    if (uuid_data != NULL && uuid_len >= 16) {
+        for (int i = 0; i + 16 <= uuid_len; i += 16) {
+            if (uuid_data[i+0] == 0x21 && uuid_data[i+1] == 0x65 &&
+                uuid_data[i+2] == 0x63 && uuid_data[i+3] == 0x69 &&
+                uuid_data[i+4] == 0x76 && uuid_data[i+5] == 0x72 &&
+                uuid_data[i+6] == 0x65 && uuid_data[i+7] == 0x73 &&
+                uuid_data[i+8] == 0x2d && uuid_data[i+9] == 0x58 &&
+                uuid_data[i+10] == 0x4f && uuid_data[i+11] == 0x42 &&
+                uuid_data[i+12] == 0x6e && uuid_data[i+13] == 0x61 &&
+                uuid_data[i+14] == 0x79 && uuid_data[i+15] == 0x6e) {
+                return true;
+            }
+        }
+    }
+    
+    return false;
+}
+
+static void process_scan_result(esp_ble_gap_cb_param_t *scan_result) {
+    if (nyanBoxDevices.size() >= MAX_DEVICES) {
         return;
-      }
+    }
+
+    if (!hasNyanboxService(scan_result->scan_rst.ble_adv, scan_result->scan_rst.adv_data_len)) {
+        return;
+    }
+
+    uint8_t *bda = scan_result->scan_rst.bda;
+    char addrStr[18];
+    bda_to_string(bda, addrStr, sizeof(addrStr));
+
+    if (strlen(addrStr) < 12) return;
+
+    for (size_t i = 0; i < nyanBoxDevices.size(); i++) {
+        if (strcmp(nyanBoxDevices[i].address, addrStr) == 0) {
+            nyanBoxDevices[i].rssi = scan_result->scan_rst.rssi;
+            nyanBoxDevices[i].lastSeen = millis();
+            
+            uint8_t manuf_len = 0;
+            uint8_t *manuf_data = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
+                                                           ESP_BLE_AD_MANUFACTURER_SPECIFIC_TYPE,
+                                                           &manuf_len);
+            if (manuf_data != NULL && manuf_len >= 8) {
+                parseManufacturerData(manuf_data, manuf_len, 
+                                     nyanBoxDevices[i].level, nyanBoxDevices[i].version);
+            }
+            
+            uint8_t adv_name_len = 0;
+            uint8_t *adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
+                                                          ESP_BLE_AD_TYPE_NAME_CMPL,
+                                                          &adv_name_len);
+            
+            if (adv_name == NULL) {
+                adv_name_len = 0;
+                adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
+                                                    ESP_BLE_AD_TYPE_NAME_SHORT,
+                                                    &adv_name_len);
+            }
+
+            if (adv_name != NULL && adv_name_len > 0 && adv_name_len < 32) {
+                memcpy(nyanBoxDevices[i].name, adv_name, adv_name_len);
+                nyanBoxDevices[i].name[adv_name_len] = '\0';
+            }
+            
+            std::sort(nyanBoxDevices.begin(), nyanBoxDevices.end(),
+                      [](const NyanBoxDevice &a, const NyanBoxDevice &b) {
+                        return a.rssi > b.rssi;
+                      });
+            return;
+        }
     }
 
     NyanBoxDevice newDev = {};
-    strncpy(newDev.address, deviceAddress, sizeof(newDev.address) - 1);
-    newDev.rssi = deviceRSSI;
+    strncpy(newDev.address, addrStr, 17);
+    newDev.address[17] = '\0';
+    newDev.rssi = scan_result->scan_rst.rssi;
     newDev.lastSeen = millis();
+    newDev.level = 0;
     strcpy(newDev.version, "Unknown");
+    strcpy(newDev.name, "Unknown");
 
-    if (advertisedDevice.haveManufacturerData()) {
-      parseManufacturerData(advertisedDevice.getManufacturerData(),
-                            newDev.level, newDev.version);
+    uint8_t adv_name_len = 0;
+    uint8_t *adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
+                                                  ESP_BLE_AD_TYPE_NAME_CMPL,
+                                                  &adv_name_len);
+    
+    if (adv_name == NULL) {
+        adv_name_len = 0;
+        adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
+                                            ESP_BLE_AD_TYPE_NAME_SHORT,
+                                            &adv_name_len);
     }
 
-    const char *deviceName = advertisedDevice.getName().c_str();
-    if (deviceName && deviceName[0]) {
-      strncpy(newDev.name, deviceName, sizeof(newDev.name) - 1);
-    } else {
-      strcpy(newDev.name, "Unknown");
+    if (adv_name != NULL && adv_name_len > 0 && adv_name_len < 32) {
+        memcpy(newDev.name, adv_name, adv_name_len);
+        newDev.name[adv_name_len] = '\0';
+    }
+
+    uint8_t manuf_len = 0;
+    uint8_t *manuf_data = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
+                                                    ESP_BLE_AD_MANUFACTURER_SPECIFIC_TYPE,
+                                                    &manuf_len);
+    if (manuf_data != NULL && manuf_len >= 8) {
+        parseManufacturerData(manuf_data, manuf_len, newDev.level, newDev.version);
     }
 
     nyanBoxDevices.push_back(newDev);
+    
     std::sort(nyanBoxDevices.begin(), nyanBoxDevices.end(),
               [](const NyanBoxDevice &a, const NyanBoxDevice &b) {
                 return a.rssi > b.rssi;
               });
-  }
-};
+}
 
-static NyanboxAdvertisedDeviceCallbacks nyanboxDeviceCallbacks;
-
+static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
+    switch (event) {
+    case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT:
+        if (param->scan_param_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+            isScanning = true;
+            esp_ble_gap_start_scanning(8);
+            lastScanTime = millis();
+        }
+        break;
+    case ESP_GAP_BLE_SCAN_START_COMPLETE_EVT:
+        if (param->scan_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+            isScanning = false;
+        }
+        break;
+    case ESP_GAP_BLE_SCAN_RESULT_EVT:
+        switch (param->scan_rst.search_evt) {
+        case ESP_GAP_SEARCH_INQ_RES_EVT:
+            process_scan_result(param);
+            break;
+        case ESP_GAP_SEARCH_INQ_CMPL_EVT:
+            isScanning = false;
+            lastScanTime = millis();
+            scanCompleted = true;
+            break;
+        default:
+            break;
+        }
+        break;
+    case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
+        isScanning = false;
+        scanCompleted = true;
+        break;
+    default:
+        break;
+    }
+}
 
 void nyanboxDetectorSetup() {
+    nyanBoxDevices.clear();
+    nyanBoxDevices.reserve(MAX_DEVICES);
+    currentIndex = listStartIndex = 0;
+    isDetailView = false;
+    lastButtonPress = 0;
+    isScanning = true;
+    scanCompleted = false;
 
-  nyanBoxDevices.clear();
-  nyanBoxDevices.reserve(MAX_DEVICES);
-  currentIndex = listStartIndex = 0;
-  isDetailView = false;
-  lastButtonPress = 0;
-  nyanboxScanning = false;
-  nyanboxCallbackCount = 0;
-  lastCallbackTime = 0;
+    u8g2.begin();
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.clearBuffer();
+    u8g2.drawStr(0, 10, "Scanning for");
+    u8g2.drawStr(0, 20, "nyanBOX Devices...");
+    u8g2.sendBuffer();
 
-  u8g2.begin();
-  u8g2.setFont(u8g2_font_6x10_tr);
-  u8g2.clearBuffer();
-  u8g2.drawStr(0, 10, "nyanBOX Detector");
-  u8g2.drawStr(0, 20, "Initializing...");
-  u8g2.sendBuffer();
-  BLEDevice::init("nyanBOXDetector");
-  delay(100);
-  
-  pNyanboxScan = BLEDevice::getScan();
-  pNyanboxScan->setAdvertisedDeviceCallbacks(&nyanboxDeviceCallbacks);
-  pNyanboxScan->setActiveScan(true);
-  pNyanboxScan->setInterval(1000);
-  pNyanboxScan->setWindow(200);
-  
-  try {
-    pNyanboxScan->start(SCAN_DURATION / 1000, false);
-    nyanboxScanning = true;
-    nyanboxLastScanTime = millis();
-  } catch (...) {
-    nyanboxLastScanTime = millis() - SCAN_INTERVAL + 2000;
-    nyanboxScanning = false;
-  }
+    if (!btStarted()) {
+        btStart();
+    }
 
-  pinMode(BTN_UP, INPUT_PULLUP);
-  pinMode(BTN_DOWN, INPUT_PULLUP);
-  pinMode(BTN_RIGHT, INPUT_PULLUP);
-  pinMode(BTN_BACK, INPUT_PULLUP);
-  pinMode(BTN_CENTER, INPUT_PULLUP);
+    esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
+    if (bt_state == ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+        esp_bluedroid_init();
+    }
+    if (bt_state != ESP_BLUEDROID_STATUS_ENABLED) {
+        esp_bluedroid_enable();
+    }
+
+    esp_ble_gap_register_callback(esp_gap_cb);
+    esp_ble_gap_set_scan_params(&ble_scan_params);
+
+    bleInitialized = true;
+
+    pinMode(BTN_UP, INPUT_PULLUP);
+    pinMode(BTN_DOWN, INPUT_PULLUP);
+    pinMode(BTN_RIGHT, INPUT_PULLUP);
+    pinMode(BTN_BACK, INPUT_PULLUP);
+    pinMode(BTN_CENTER, INPUT_PULLUP);
 }
 
 void nyanboxDetectorLoop() {
-  unsigned long now = millis();
+    if (!bleInitialized) return;
 
-  if (now - nyanboxLastScanTime > 10000) {
-    nyanboxCallbackCount = 0;
-  }
+    unsigned long now = millis();
 
-  if (!nyanboxScanning && now - nyanboxLastScanTime > SCAN_INTERVAL) {
-    if (pNyanboxScan) {
-      try {
-        pNyanboxScan->start(SCAN_DURATION / 1000, false);
-        nyanboxScanning = true;
-        nyanboxLastScanTime = now;
-      } catch (...) {
-        nyanboxLastScanTime = now - SCAN_INTERVAL + 5000;
-      }
-    }
-  }
-
-  if (nyanboxScanning && now - nyanboxLastScanTime > SCAN_DURATION) {
-    if (pNyanboxScan) {
-      try {
-        pNyanboxScan->stop();
-      } catch (...) {
-      }
-    }
-    nyanboxScanning = false;
-  }
-
-  static unsigned long lastCleanup = 0;
-  if (now - lastCleanup > 60000 && nyanBoxDevices.size() >= MAX_DEVICES) {
-    try {
-      std::sort(nyanBoxDevices.begin(), nyanBoxDevices.end(),
-                [](const NyanBoxDevice &a, const NyanBoxDevice &b) {
-                  return a.lastSeen < b.lastSeen;
-                });
-      int devicesToRemove = MAX_DEVICES / 4;
-      if (devicesToRemove > 0 && devicesToRemove <= (int)nyanBoxDevices.size()) {
-        nyanBoxDevices.erase(nyanBoxDevices.begin(),
-                             nyanBoxDevices.begin() + devicesToRemove);
-      }
-      lastCleanup = now;
-    } catch (...) {
-      nyanBoxDevices.clear();
-      currentIndex = listStartIndex = 0;
-      lastCleanup = now;
-    }
-  }
-
-  if (now - lastButtonPress > debounceTime) {
-    if (digitalRead(BTN_BACK) == LOW && isDetailView) {
-      isDetailView = false;
-      lastButtonPress = now;
+    if (isScanning) {
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_6x10_tr);
+        u8g2.drawStr(0, 10, "Scanning for");
+        u8g2.drawStr(0, 20, "nyanBOX Devices...");
+        u8g2.sendBuffer();
+        return;
     }
 
-    if (!isDetailView && !nyanBoxDevices.empty()) {
-      if (digitalRead(BTN_UP) == LOW && currentIndex > 0) {
-        --currentIndex;
-        if (currentIndex < listStartIndex)
-          --listStartIndex;
-        lastButtonPress = now;
-      } else if (digitalRead(BTN_DOWN) == LOW &&
-                 currentIndex < (int)nyanBoxDevices.size() - 1) {
-        ++currentIndex;
-        if (currentIndex >= listStartIndex + 5)
-          ++listStartIndex;
-        lastButtonPress = now;
-      } else if (digitalRead(BTN_RIGHT) == LOW) {
-        isDetailView = true;
-        lastButtonPress = now;
-      }
+    if (!isScanning && scanCompleted && now - lastScanTime > scanInterval) {
+        if (nyanBoxDevices.size() >= MAX_DEVICES) {
+            std::sort(nyanBoxDevices.begin(), nyanBoxDevices.end(),
+                    [](const NyanBoxDevice &a, const NyanBoxDevice &b) {
+                        if (a.lastSeen != b.lastSeen) {
+                            return a.lastSeen < b.lastSeen;
+                        }
+                        return a.rssi < b.rssi;
+                    });
+            
+            int devicesToRemove = MAX_DEVICES / 4;
+            if (devicesToRemove > 0) {
+                nyanBoxDevices.erase(nyanBoxDevices.begin(), 
+                                    nyanBoxDevices.begin() + devicesToRemove);
+            }
+            
+            currentIndex = listStartIndex = 0;
+        }
+        
+        scanCompleted = false;
+        isScanning = true;
+        esp_ble_gap_start_scanning(8);
+        lastScanTime = now;
+        return;
     }
-  }
 
-  if (nyanBoxDevices.empty()) {
-    currentIndex = listStartIndex = 0;
-    isDetailView = false;
-  } else {
-    currentIndex = constrain(currentIndex, 0, (int)nyanBoxDevices.size() - 1);
-    listStartIndex =
-        constrain(listStartIndex, 0, max(0, (int)nyanBoxDevices.size() - 5));
-  }
+    if (scanCompleted && now - lastButtonPress > debounceTime) {
+        if (!isDetailView && digitalRead(BTN_UP) == LOW && currentIndex > 0) {
+            --currentIndex;
+            if (currentIndex < listStartIndex)
+                --listStartIndex;
+            lastButtonPress = now;
+        } else if (!isDetailView && digitalRead(BTN_DOWN) == LOW &&
+                   currentIndex < (int)nyanBoxDevices.size() - 1) {
+            ++currentIndex;
+            if (currentIndex >= listStartIndex + 5)
+                ++listStartIndex;
+            lastButtonPress = now;
+        } else if (!isDetailView && digitalRead(BTN_RIGHT) == LOW &&
+                   !nyanBoxDevices.empty()) {
+            isDetailView = true;
+            lastButtonPress = now;
+        } else if (digitalRead(BTN_BACK) == LOW) {
+            isDetailView = false;
+            lastButtonPress = now;
+        }
+    }
 
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_6x10_tr);
-
-  if (!nyanboxScanning && now - nyanboxLastScanTime > SCAN_INTERVAL - 1000) {
-    u8g2.drawStr(0, 10, "Refreshing");
-    u8g2.drawStr(0, 20, "nyanBOX Devices...");
-  } else if (nyanBoxDevices.empty()) {
-    u8g2.drawStr(0, 10, "Scanning for");
-    u8g2.drawStr(0, 20, "nyanBOX Devices...");
-    u8g2.drawStr(0, 35, "Nearby: n/a");
-    u8g2.drawStr(0, 50, "Press CENTER to exit");
-  } else if (isDetailView && !nyanBoxDevices.empty() && currentIndex >= 0 && currentIndex < (int)nyanBoxDevices.size()) {
-    auto &dev = nyanBoxDevices[currentIndex];
-    u8g2.setFont(u8g2_font_5x8_tr);
-    char buf[32];
-
-    snprintf(buf, sizeof(buf), "Name: %s", dev.name);
-    u8g2.drawStr(0, 10, buf);
-
-    snprintf(buf, sizeof(buf), "Addr: %s", dev.address);
-    u8g2.drawStr(0, 20, buf);
-
-    if (dev.level > 0) {
-      snprintf(buf, sizeof(buf), "Level: %u", dev.level);
+    if (nyanBoxDevices.empty()) {
+        currentIndex = listStartIndex = 0;
+        isDetailView = false;
     } else {
-      snprintf(buf, sizeof(buf), "Level: Unknown");
+        currentIndex = constrain(currentIndex, 0, (int)nyanBoxDevices.size() - 1);
+        listStartIndex =
+            constrain(listStartIndex, 0, max(0, (int)nyanBoxDevices.size() - 5));
     }
-    u8g2.drawStr(0, 30, buf);
 
-    snprintf(buf, sizeof(buf), "Version: %s", dev.version);
-    u8g2.drawStr(0, 40, buf);
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tr);
+    
+    if (nyanBoxDevices.empty()) {
+        u8g2.drawStr(0, 10, "No nyanBOX Devices");
+        u8g2.drawStr(0, 20, "found");
+        u8g2.setFont(u8g2_font_5x8_tr);
+        char timeStr[32];
+        unsigned long timeLeft = (scanInterval - (now - lastScanTime)) / 1000;
+        snprintf(timeStr, sizeof(timeStr), "Scanning in %lus", timeLeft);
+        u8g2.drawStr(0, 35, timeStr);
+        u8g2.drawStr(0, 50, "Press SEL to exit");
+    } else if (isDetailView && !nyanBoxDevices.empty() && currentIndex >= 0 && currentIndex < (int)nyanBoxDevices.size()) {
+        auto &dev = nyanBoxDevices[currentIndex];
+        u8g2.setFont(u8g2_font_5x8_tr);
+        char buf[32];
 
-    snprintf(buf, sizeof(buf), "RSSI: %d", dev.rssi);
-    u8g2.drawStr(0, 50, buf);
+        snprintf(buf, sizeof(buf), "Name: %s", dev.name);
+        u8g2.drawStr(0, 10, buf);
 
-    snprintf(buf, sizeof(buf), "%lus", (millis() - dev.lastSeen) / 1000);
-    u8g2.drawStr(90, 60, buf);
-    u8g2.drawStr(0, 60, "<- Back");
-  } else {
-    char header[32];
-    snprintf(header, sizeof(header), "Badges: %d/%d", (int)nyanBoxDevices.size(), MAX_DEVICES);
-    u8g2.drawStr(0, 10, header);
+        snprintf(buf, sizeof(buf), "Addr: %s", dev.address);
+        u8g2.drawStr(0, 20, buf);
 
-    for (int i = 0; i < 5; ++i) {
-      int idx = listStartIndex + i;
-      if (idx >= (int)nyanBoxDevices.size()) break;
+        if (dev.level > 0) {
+            snprintf(buf, sizeof(buf), "Level: %u", dev.level);
+        } else {
+            snprintf(buf, sizeof(buf), "Level: Unknown");
+        }
+        u8g2.drawStr(0, 30, buf);
 
-      auto &d = nyanBoxDevices[idx];
-      if (idx == currentIndex)
-        u8g2.drawStr(0, 20 + i * 10, ">");
+        snprintf(buf, sizeof(buf), "Version: %s", dev.version);
+        u8g2.drawStr(0, 40, buf);
 
-      char line[32];
-      const char *nameToShow = (d.name[0]) ? d.name : "Unknown";
-      if (d.level > 0) {
-        snprintf(line, sizeof(line), "%.8s | L%d %d", nameToShow, d.level, d.rssi);
-      } else {
-        snprintf(line, sizeof(line), "%.8s | L? %d", nameToShow, d.rssi);
-      }
-      u8g2.drawStr(10, 20 + i * 10, line);
+        snprintf(buf, sizeof(buf), "RSSI: %d", dev.rssi);
+        u8g2.drawStr(0, 50, buf);
+
+        snprintf(buf, sizeof(buf), "%lus", (millis() - dev.lastSeen) / 1000);
+        u8g2.drawStr(90, 60, buf);
+        u8g2.drawStr(0, 60, "<- Back");
+    } else {
+        char header[32];
+        snprintf(header, sizeof(header), "Badges: %d/%d", (int)nyanBoxDevices.size(), MAX_DEVICES);
+        u8g2.drawStr(0, 10, header);
+
+        for (int i = 0; i < 5; ++i) {
+            int idx = listStartIndex + i;
+            if (idx >= (int)nyanBoxDevices.size()) break;
+
+            auto &d = nyanBoxDevices[idx];
+            if (idx == currentIndex)
+                u8g2.drawStr(0, 20 + i * 10, ">");
+
+            char line[32];
+            const char *nameToShow = (d.name[0]) ? d.name : "Unknown";
+            if (d.level > 0) {
+                snprintf(line, sizeof(line), "%.8s | L%d %d", nameToShow, d.level, d.rssi);
+            } else {
+                snprintf(line, sizeof(line), "%.8s | L? %d", nameToShow, d.rssi);
+            }
+            u8g2.drawStr(10, 20 + i * 10, line);
+        }
     }
-  }
 
-  u8g2.sendBuffer();
+    u8g2.sendBuffer();
 }

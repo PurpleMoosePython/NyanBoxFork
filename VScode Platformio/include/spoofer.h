@@ -6,9 +6,7 @@
 #ifndef spoofer_H
 #define spoofer_H
 
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEServer.h>
+#include <esp_bt.h>
 #include <U8g2lib.h>
 #include <Adafruit_NeoPixel.h>
 #include "neopixel.h"

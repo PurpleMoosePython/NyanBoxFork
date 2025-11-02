@@ -6,7 +6,6 @@
 #ifndef flipper_H
 #define flipper_H
 
-#include <BLEDevice.h>
 #include <U8g2lib.h>
 #include "neopixel.h"
 #include "pindefs.h"

@@ -5,14 +5,15 @@
 */
 
 #include "../include/sourapple.h"
+#include "esp_bt.h"
+#include "esp_gap_ble_api.h"
+#include "esp_bt_main.h"
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 extern Adafruit_NeoPixel pixels;
 
 int count = 0;
 bool isSpamming = false;
-BLEServer *pServer = nullptr;
-BLEAdvertising *pAdvertising = nullptr;
 bool bleInitialized = false;
 
 struct ContinuityModel {
@@ -64,9 +65,16 @@ const ContinuityAction continuity_actions[] = {
     {0x2B, "AppleID for AppleTV?"}
 };
 
-BLEAdvertisementData getAdvertisementData() {
-    BLEAdvertisementData advertisementData = BLEAdvertisementData();
-    
+static esp_ble_adv_params_t adv_params = {
+    .adv_int_min        = 0x20,
+    .adv_int_max        = 0x40,
+    .adv_type           = ADV_TYPE_NONCONN_IND,
+    .own_addr_type      = BLE_ADDR_TYPE_RANDOM,
+    .channel_map        = ADV_CHNL_ALL,
+    .adv_filter_policy  = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+};
+
+void getAdvertisementData(uint8_t *data, uint8_t *len) {
     if (random(2) == 0) {
         const ContinuityModel &model = continuity_models[random(sizeof(continuity_models)/sizeof(continuity_models[0]))];
         uint8_t applePacket[31] = {
@@ -77,7 +85,8 @@ BLEAdvertisementData getAdvertisementData() {
             (uint8_t)random(256), (uint8_t)random(256), (uint8_t)random(256),
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
         };
-        advertisementData.addData(std::string((char *)applePacket, 31));
+        memcpy(data, applePacket, 31);
+        *len = 31;
     } else {
         const ContinuityAction &action = continuity_actions[random(sizeof(continuity_actions)/sizeof(continuity_actions[0]))];
         uint8_t applePacket[11] = {
@@ -85,47 +94,54 @@ BLEAdvertisementData getAdvertisementData() {
             action.value,
             (uint8_t)random(256), (uint8_t)random(256), (uint8_t)random(256)
         };
-        advertisementData.addData(std::string((char *)applePacket, 11));
+        memcpy(data, applePacket, 11);
+        *len = 11;
     }
-    
-    return advertisementData;
 }
 
 void executeSpam() {
     if (!bleInitialized) {
-        if (!BLEDevice::getInitialized()) {
-            BLEDevice::init("nyanBOX SourApple");
-            esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
-            esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P9);
-            esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
+        if (!btStarted()) {
+            btStart();
         }
-        pServer = BLEDevice::createServer();
-        pAdvertising = pServer->getAdvertising();
-        pAdvertising->setMinInterval(0x20);
-        pAdvertising->setMaxInterval(0x40);
-        pAdvertising->setAdvertisementType(ADV_TYPE_NONCONN_IND);
+
+        esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
+        if (bt_state == ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+            esp_bluedroid_init();
+        }
+        if (bt_state != ESP_BLUEDROID_STATUS_ENABLED) {
+            esp_bluedroid_enable();
+        }
+
+        esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+        esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P9);
+        esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
+        
         bleInitialized = true;
     }
 
-    if (!pAdvertising) return;
-
-    pAdvertising->stop();
-    
     static int macChangeCounter = 0;
     if (++macChangeCounter % 10 == 0) {
-        uint8_t mac[6] = {(uint8_t)(random(256) | 0xC0), (uint8_t)random(256), 
-                          (uint8_t)random(256), (uint8_t)random(256), 
-                          (uint8_t)random(256), (uint8_t)random(256)};
+        uint8_t mac[6] = {
+            (uint8_t)(random(256) | 0xC0), 
+            (uint8_t)random(256), 
+            (uint8_t)random(256), 
+            (uint8_t)random(256), 
+            (uint8_t)random(256), 
+            (uint8_t)random(256)
+        };
         esp_ble_gap_set_rand_addr(mac);
     }
     
-    BLEAdvertisementData advertisementData = getAdvertisementData();
-    pAdvertising->setAdvertisementData(advertisementData);
-    pAdvertising->start();
+    uint8_t advData[31];
+    uint8_t advDataLen = 0;
+    getAdvertisementData(advData, &advDataLen);
+    
+    esp_ble_gap_config_adv_data_raw(advData, advDataLen);
+    esp_ble_gap_start_advertising(&adv_params);
+    
     delay(5);
-    pAdvertising->stop();
 }
-
 
 static void drawDisplay() {
     u8g2.clearBuffer();
@@ -161,15 +177,24 @@ void sourappleLoop() {
     static unsigned long lastSpam = 0;
     static unsigned long lastDisplayUpdate = 0;
     static unsigned long spamDelay = 20;
+    static bool wasSpamming = false;
 
     if (millis() - lastButtonCheck > 300) {
         if (digitalRead(BUTTON_PIN_UP) == LOW) {
             isSpamming = !isSpamming;
+            
+            if (!isSpamming && wasSpamming && bleInitialized) {
+                esp_ble_gap_stop_advertising();
+                delay(100);
+            }
+            
             drawDisplay();
             delay(500);
             lastButtonCheck = millis();
         }
     }
+
+    wasSpamming = isSpamming;
 
     if (isSpamming && millis() - lastSpam > spamDelay) {
         executeSpam();
@@ -186,12 +211,5 @@ void sourappleLoop() {
         (!isSpamming && millis() - lastDisplayUpdate > 1000)) {
         drawDisplay();
         lastDisplayUpdate = millis();
-    }
-
-    if (!isSpamming && bleInitialized && pAdvertising) {
-        pAdvertising->stop();
-        bleInitialized = false;
-        pServer = nullptr;
-        pAdvertising = nullptr;
     }
 }

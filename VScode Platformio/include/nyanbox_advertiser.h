@@ -6,9 +6,6 @@
 #ifndef NYANBOX_ADVERTISER_H
 #define NYANBOX_ADVERTISER_H
 
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEAdvertising.h>
 #include "level_system.h"
 #include "about.h"
 
