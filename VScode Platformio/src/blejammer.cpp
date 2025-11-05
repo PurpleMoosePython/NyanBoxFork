@@ -6,6 +6,7 @@
 #include "../include/blejammer.h"
 #include "../include/sleep_manager.h"
 #include "../include/pindefs.h"
+#include <esp_bt_main.h>
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -55,6 +56,8 @@ void configureRadio(RF24 &radio, const byte *channels, size_t size) {
 }
 
 void initializeRadiosForBLE() {
+  SPI.begin();
+  delay(100);
   if (radio1.begin())
     configureRadio(radio1, channelGroup1, sizeof(channelGroup1));
   if (radio2.begin())
@@ -85,8 +88,38 @@ static void drawJammerMenu() {
 void blejammerSetup() {
   Serial.begin(115200);
 
-  esp_wifi_stop();
-  esp_wifi_disconnect();
+  esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
+  if (bt_state == ESP_BLUEDROID_STATUS_ENABLED) {
+      esp_bluedroid_disable();
+      delay(50);
+  }
+  if (bt_state != ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+      esp_bluedroid_deinit();
+      delay(50);
+  }
+  
+  if (btStarted()) {
+      btStop();
+      delay(50);
+  }
+
+  wifi_mode_t mode;
+  if (esp_wifi_get_mode(&mode) == ESP_OK) {
+      esp_wifi_stop();
+      delay(50);
+      esp_wifi_deinit();
+      delay(100);
+  }
+
+  esp_netif_t* sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+  if (sta_netif != NULL) {
+      esp_netif_destroy(sta_netif);
+  }
+
+  esp_netif_t* ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+  if (ap_netif != NULL) {
+      esp_netif_destroy(ap_netif);
+  }
 
   pinMode(BUTTON_PIN_UP, INPUT_PULLUP);
   pinMode(BUTTON_PIN_DOWN, INPUT_PULLUP);

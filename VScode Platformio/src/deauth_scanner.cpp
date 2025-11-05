@@ -8,16 +8,21 @@
 #include "../include/sleep_manager.h"
 #include "../include/pindefs.h"
 #include <U8g2lib.h>
-#include <esp_wifi.h>
-#include <WiFi.h>
+#include "esp_wifi.h"
+#include "esp_event.h"
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
+
+#define BTN_UP BUTTON_PIN_UP
+#define BTN_DOWN BUTTON_PIN_DOWN
+#define BTN_RIGHT BUTTON_PIN_RIGHT
+#define BTN_BACK BUTTON_PIN_LEFT
 
 #define CHANNEL_MIN 1
 #define CHANNEL_MAX 13
 #define CHANNEL_HOP_INTERVAL 1500
 
-static bool useMainChannels = true;  // true = channels 1,6,11 only, false = all channels 1-13
+static bool useMainChannels = true;
 static const uint8_t mainChannels[] = {1, 6, 11};
 static const int numMainChannels = sizeof(mainChannels) / sizeof(mainChannels[0]);
 static int currentChannelIndex = 0;
@@ -27,9 +32,11 @@ static uint16_t totalDeauths = 0;
 
 static uint8_t lastDeauthMAC[6] = {0};
 static uint8_t lastDeauthChannel = 0;
-bool macSeen = false;
+static bool macSeen = false;
 
-unsigned long lastChannelHop = 0;
+static unsigned long lastChannelHop = 0;
+static unsigned long lastButtonPress = 0;
+const unsigned long debounceTime = 200;
 
 // Bypass sanity checks for raw 802.11 frames
 extern "C" int ieee80211_raw_frame_sanity_check(int32_t, int32_t, int32_t) {
@@ -73,12 +80,10 @@ void packetSniffer(void *buf, wifi_promiscuous_pkt_type_t type) {
 }
 
 void deauthScannerSetup() {
-    WiFi.mode(WIFI_MODE_STA);
-    esp_wifi_set_storage(WIFI_STORAGE_RAM);
-    delay(100);
-
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);
     esp_wifi_start();
 
     wifi_promiscuous_filter_t filter = {
@@ -101,17 +106,22 @@ void deauthScannerSetup() {
     memset(lastDeauthMAC, 0, sizeof(lastDeauthMAC));
     lastDeauthChannel = 0;
     lastChannelHop = millis();
+    lastButtonPress = 0;
+
+    pinMode(BTN_UP, INPUT_PULLUP);
+    pinMode(BTN_DOWN, INPUT_PULLUP);
+    pinMode(BTN_RIGHT, INPUT_PULLUP);
+    pinMode(BTN_BACK, INPUT_PULLUP);
+
+    u8g2.begin();
 }
 
 void renderDeauthStats() {
     char headerStr[32];
-    char countStr[32];
-    char totalStr[32];
     char macStr[18];
 
     const char* modeText = useMainChannels ? "Main Channels" : "All Channels";
     snprintf(headerStr, sizeof(headerStr), "CH:%2d | %s", currentChannel, modeText);
-    snprintf(totalStr, sizeof(totalStr), "Total: %4d", totalDeauths);
     formatMAC(macStr, lastDeauthMAC);
 
     u8g2.clearBuffer();
@@ -125,6 +135,8 @@ void renderDeauthStats() {
     int currentWidth = u8g2.getUTF8Width(currentStr);
     u8g2.drawStr((128 - currentWidth) / 2, 24, currentStr);
     
+    char totalStr[32];
+    snprintf(totalStr, sizeof(totalStr), "Total: %4d", totalDeauths);
     int totalWidth = u8g2.getUTF8Width(totalStr);
     u8g2.drawStr((128 - totalWidth) / 2, 36, totalStr);
     
@@ -168,19 +180,21 @@ void hopChannel() {
 void deauthScannerLoop() {
     unsigned long now = millis();
     
-    if (digitalRead(BUTTON_PIN_LEFT) == LOW) {
-        useMainChannels = !useMainChannels;
-        
-        if (useMainChannels) {
-            currentChannelIndex = 0;
-            currentChannel = mainChannels[currentChannelIndex];
-        } else {
-            currentChannel = CHANNEL_MIN;
+    if (now - lastButtonPress > debounceTime) {
+        if (digitalRead(BTN_BACK) == LOW) {
+            useMainChannels = !useMainChannels;
+            
+            if (useMainChannels) {
+                currentChannelIndex = 0;
+                currentChannel = mainChannels[currentChannelIndex];
+            } else {
+                currentChannel = CHANNEL_MIN;
+            }
+            
+            esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
+            deauthCount = 0;
+            lastButtonPress = now;
         }
-        
-        esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
-        deauthCount = 0;
-        delay(200);
     }
     
     if (now - lastChannelHop >= CHANNEL_HOP_INTERVAL) {

@@ -7,7 +7,6 @@
 #ifndef BEACON_SPAM_H
 #define BEACON_SPAM_H
 
-#include <WiFi.h>
 #include "esp_wifi.h"
 #include <vector>
 #include "pindefs.h"

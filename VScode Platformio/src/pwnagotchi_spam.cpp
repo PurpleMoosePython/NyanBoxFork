@@ -6,6 +6,9 @@
 
 #include "../include/pwnagotchi_spam.h"
 #include "../include/sleep_manager.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include <ArduinoJson.h>
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 
@@ -16,6 +19,8 @@ static unsigned long startTime = 0;
 static int currentFaceIndex = 0;
 static int currentNameIndex = 0;
 static int currentChannel = 0;
+static bool wifiInitialized = false;
+
 enum SpamMode { NORMAL_MODE, RANDOM_MODE, DOS_MODE };
 static SpamMode currentMode = NORMAL_MODE;
 
@@ -174,8 +179,20 @@ void sendPwnagotchiBeacon(uint8_t channel, const char* face, const char* name) {
 }
 
 void pwnagotchiSpamSetup() {
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
+    wifi_mode_t currentWifiMode;
+    if (esp_wifi_get_mode(&currentWifiMode) == ESP_OK) {
+        esp_wifi_disconnect();
+        esp_wifi_stop();
+        wifiInitialized = true;
+    } else {
+        wifiInitialized = false;
+    }
+
+    if (!wifiInitialized) {
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        esp_wifi_init(&cfg);
+    }
+
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
     esp_wifi_set_mode(WIFI_MODE_AP);
     esp_wifi_start();

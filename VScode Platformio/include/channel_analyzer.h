@@ -7,8 +7,6 @@
 #ifndef CHANNEL_MONITOR_H
 #define CHANNEL_MONITOR_H
 
-#include <WiFi.h>
-#include "esp_wifi.h"
 #include <U8g2lib.h>
 #include <Arduino.h>
 #include "pindefs.h"

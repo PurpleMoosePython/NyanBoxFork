@@ -6,11 +6,9 @@
 #ifndef PWNAGOTCHI_DETECTOR_H
 #define PWNAGOTCHI_DETECTOR_H
 
-#include "esp_wifi.h"
 #include "pindefs.h"
 #include <ArduinoJson.h>
 #include <U8g2lib.h>
-#include <WiFi.h>
 #include <vector>
 
 void pwnagotchiDetectorSetup();

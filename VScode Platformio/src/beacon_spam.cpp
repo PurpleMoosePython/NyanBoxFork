@@ -6,6 +6,9 @@
 
 #include "../include/beacon_spam.h"
 #include "../include/sleep_manager.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include <string.h>
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 
@@ -14,8 +17,14 @@ extern "C" int ieee80211_raw_frame_sanity_check(int32_t arg, int32_t arg2, int32
     return 0;
 }
 
-const uint8_t channels[] = {1, 6, 11};    // Common channels are 1, 6, 11
-const bool wpa2 = false;                 // Open networks = better visibility
+namespace {
+
+#define BTN_UP BUTTON_PIN_UP
+#define BTN_DOWN BUTTON_PIN_DOWN
+#define BTN_RIGHT BUTTON_PIN_RIGHT
+#define BTN_BACK BUTTON_PIN_LEFT
+
+const uint8_t channels[] = {1, 6, 11};
 
 const char ssids[] PROGMEM = {
   "Mom Use This One\n"
@@ -80,9 +89,8 @@ char emptySSID[32];
 uint8_t macAddr[6];
 uint8_t wifi_channel = 1;
 uint32_t currentTime = 0;
-uint32_t packetSize = 0;
 
-uint8_t beaconPacket[100] = {
+uint8_t beaconPacketOpen[83] = {
   0x80, 0x00, 0x00, 0x00,
   0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
   0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
@@ -90,20 +98,49 @@ uint8_t beaconPacket[100] = {
   0x00, 0x00,
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
   0x64, 0x00,
-  0x21, 0x04,
+  0x01, 0x04,
   0x00, 0x20,
   0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
   0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
   0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
-  0x20, 0x20, 0x20, 0x20,
+  0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
   0x01, 0x08, 0x82, 0x84, 0x8b, 0x96, 0x0c, 0x18, 0x30, 0x48,
   0x03, 0x01, 0x01
+};
+
+uint8_t beaconPacketWPA2[109] = {
+  0x80, 0x00, 0x00, 0x00,
+  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+  0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+  0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+  0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x64, 0x00,
+  0x11, 0x04,
+  0x00, 0x20,
+  0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+  0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+  0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+  0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+  0x01, 0x08, 0x82, 0x84, 0x8b, 0x96, 0x0c, 0x18, 0x30, 0x48,
+  0x03, 0x01, 0x01,
+  0x30, 0x18, 0x01, 0x00, 0x00, 0x0f, 0xac, 0x02,
+  0x02, 0x00, 0x00, 0x0f, 0xac, 0x04, 0x00, 0x0f,
+  0xac, 0x02, 0x01, 0x00, 0x00, 0x0f, 0xac, 0x02,
+  0x00, 0x00
 };
 
 void randomMac() {
   for (int i = 0; i < 6; i++) {
     macAddr[i] = random(256);
   }
+  macAddr[0] |= 0x02;
+  macAddr[0] &= 0xFE;
+}
+
+uint16_t randomBeaconInterval() {
+  uint16_t intervals[] = {0x64, 0x32, 0xC8, 0x12C};
+  return intervals[random(4)] | (intervals[random(4)] << 8);
 }
 
 void nextChannel() {
@@ -113,20 +150,28 @@ void nextChannel() {
   esp_wifi_set_channel(wifi_channel, WIFI_SECOND_CHAN_NONE);
 }
 
-enum BeaconSpamMode { BEACON_SPAM_MENU, BEACON_SPAM_CLONE_ALL, BEACON_SPAM_CLONE_SELECTED, BEACON_SPAM_CUSTOM, BEACON_SPAM_RANDOM };
-static BeaconSpamMode beaconSpamMode = BEACON_SPAM_MENU;
-static int menuSelection = 0;
-static int ssidIndex = 0;
+enum BeaconSpamMode { BEACON_SPAM_MENU, BEACON_SPAM_CLONE_ALL, BEACON_SPAM_CLONE_SELECTED, BEACON_SPAM_CUSTOM, BEACON_SPAM_RANDOM, BEACON_SPAM_SCANNING };
+BeaconSpamMode beaconSpamMode = BEACON_SPAM_MENU;
+int menuSelection = 0;
+int ssidIndex = 0;
 
 struct ClonedSSID {
-    char ssid[32];
+    char ssid[33];
     uint8_t channel;
     bool selected;
 };
-static std::vector<ClonedSSID> scannedSSIDs;
-#define MAX_CLONE_SSIDS 50
-#define SCAN_INTERVAL 30000
-static unsigned long lastScanTime = 0;
+std::vector<ClonedSSID> scannedSSIDs;
+std::vector<ClonedSSID> oldSSIDList;
+const int MAX_CLONE_SSIDS = 50;
+const unsigned long SCAN_INTERVAL = 30000;
+const unsigned long SCAN_DURATION = 8000;
+const unsigned long DISPLAY_UPDATE_INTERVAL = 100;
+unsigned long beacon_lastScanTime = 0;
+unsigned long beacon_scanStartTime = 0;
+unsigned long beacon_lastDisplayUpdate = 0;
+uint16_t beacon_lastApCount = 0;
+bool beacon_isScanning = false;
+BeaconSpamMode returnToMode = BEACON_SPAM_MENU;
 
 void drawBeaconSpamMenu() {
   u8g2.clearBuffer();
@@ -141,7 +186,7 @@ void drawBeaconSpamMenu() {
   u8g2.sendBuffer();
 }
 
-static void drawSSIDList() {
+void drawSSIDList() {
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_6x10_tr);
     u8g2.drawStr(0, 12, "Select SSID to clone");
@@ -159,58 +204,166 @@ static void drawSSIDList() {
     u8g2.sendBuffer();
 }
 
-static void showScanningSSIDs() {
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_6x10_tr);
-  u8g2.drawStr(0, 30, "Scanning SSIDs...");
-  u8g2.sendBuffer();
-}
+void processScanResults(unsigned long now) {
+    uint16_t number = 0;
+    esp_wifi_scan_get_ap_num(&number);
 
-static void updateSSIDList() {
-    showScanningSSIDs();
-    std::vector<ClonedSSID> oldList = scannedSSIDs;
-    scannedSSIDs.clear();
-    int n = WiFi.scanNetworks();
-    for (int i = 0; i < n && (int)scannedSSIDs.size() < MAX_CLONE_SSIDS; i++) {
-        String ssid = WiFi.SSID(i);
-        uint8_t channel = WiFi.channel(i);
-        if (ssid.length() > 0 && ssid.length() < 32) {
-            ClonedSSID entry;
-            strncpy(entry.ssid, ssid.c_str(), sizeof(entry.ssid) - 1);
-            entry.ssid[sizeof(entry.ssid) - 1] = '\0';
-            entry.channel = channel;
-            entry.selected = false;
-            for (const auto& old : oldList) {
-                if (strcmp(old.ssid, entry.ssid) == 0 && old.channel == entry.channel) {
-                    entry.selected = old.selected;
-                    break;
+    if (number == 0) return;
+
+    wifi_ap_record_t *ap_info = (wifi_ap_record_t *)malloc(sizeof(wifi_ap_record_t) * number);
+    if (ap_info == NULL) return;
+
+    memset(ap_info, 0, sizeof(wifi_ap_record_t) * number);
+
+    uint16_t actual_number = number;
+    esp_err_t err = esp_wifi_scan_get_ap_records(&actual_number, ap_info);
+
+    if (err == ESP_OK) {
+        for (int i = 0; i < actual_number && (int)scannedSSIDs.size() < MAX_CLONE_SSIDS; i++) {
+            if (ap_info[i].ssid[0] != '\0') {
+                bool found = false;
+                for (const auto& existing : scannedSSIDs) {
+                    if (strcmp(existing.ssid, (char*)ap_info[i].ssid) == 0 &&
+                        existing.channel == ap_info[i].primary) {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found) {
+                    ClonedSSID entry;
+                    strncpy(entry.ssid, (char*)ap_info[i].ssid, sizeof(entry.ssid) - 1);
+                    entry.ssid[sizeof(entry.ssid) - 1] = '\0';
+                    entry.channel = ap_info[i].primary;
+                    entry.selected = false;
+
+                    for (const auto& old : oldSSIDList) {
+                        if (strcmp(old.ssid, entry.ssid) == 0 && old.channel == entry.channel) {
+                            entry.selected = old.selected;
+                            break;
+                        }
+                    }
+                    scannedSSIDs.push_back(entry);
                 }
             }
-            scannedSSIDs.push_back(entry);
         }
     }
+
+    free(ap_info);
+}
+
+void startSSIDScan(BeaconSpamMode returnMode) {
+    oldSSIDList = scannedSSIDs;
+    scannedSSIDs.clear();
+    beacon_isScanning = true;
+    beacon_lastApCount = 0;
+    beacon_scanStartTime = millis();
+    beacon_lastDisplayUpdate = millis();
+    returnToMode = returnMode;
+
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    delay(100);
+
+    wifi_scan_config_t scan_config = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time = {
+            .active = {
+                .min = 120,
+                .max = 200
+            }
+        }
+    };
+
+    esp_wifi_scan_start(&scan_config, false);
+    beaconSpamMode = BEACON_SPAM_SCANNING;
+}
+
+void updateSSIDScan() {
+    unsigned long now = millis();
+
+    uint16_t currentApCount = 0;
+    esp_wifi_scan_get_ap_num(&currentApCount);
+
+    if (currentApCount > beacon_lastApCount) {
+        processScanResults(now);
+        beacon_lastApCount = currentApCount;
+    }
+
+    if (now - beacon_lastDisplayUpdate > DISPLAY_UPDATE_INTERVAL) {
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_6x10_tr);
+        u8g2.drawStr(0, 10, "Scanning WiFi...");
+
+        char countStr[32];
+        snprintf(countStr, sizeof(countStr), "Found: %d networks", (int)scannedSSIDs.size());
+        u8g2.drawStr(0, 25, countStr);
+
+        int barWidth = 120;
+        int barHeight = 10;
+        int barX = 4;
+        int barY = 35;
+        u8g2.drawFrame(barX, barY, barWidth, barHeight);
+
+        unsigned long elapsed = now - beacon_scanStartTime;
+        int fillWidth = ((elapsed * (barWidth - 4)) / SCAN_DURATION);
+        if (fillWidth > (barWidth - 4)) fillWidth = barWidth - 4;
+        if (fillWidth > 0) {
+            u8g2.drawBox(barX + 2, barY + 2, fillWidth, barHeight - 4);
+        }
+
+        u8g2.setFont(u8g2_font_5x8_tr);
+        u8g2.drawStr(0, 60, "Press SEL to exit");
+        u8g2.sendBuffer();
+
+        beacon_lastDisplayUpdate = now;
+    }
+
+    if (now - beacon_scanStartTime > SCAN_DURATION) {
+        processScanResults(now);
+        esp_wifi_scan_stop();
+        esp_wifi_set_promiscuous(true);
+
+        beacon_isScanning = false;
+        beacon_lastScanTime = now;
+        beaconSpamMode = returnToMode;
+
+        if (ssidIndex >= (int)scannedSSIDs.size() && !scannedSSIDs.empty()) {
+            ssidIndex = 0;
+        }
+    }
+}
+
 }
 
 void beaconSpamSetup() {
   for (int i = 0; i < 32; i++) emptySSID[i] = ' ';
   randomSeed((uint32_t)esp_random());
 
-  packetSize = sizeof(beaconPacket);
-  if (!wpa2) {
-    beaconPacket[34] = 0x21;
-    packetSize -= 26;
-  }
+  beacon_isScanning = false;
+  beacon_lastApCount = 0;
 
-  WiFi.mode(WIFI_STA);
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  esp_wifi_init(&cfg);
   esp_wifi_set_mode(WIFI_MODE_STA);
   esp_wifi_start();
+
   esp_wifi_set_promiscuous(true);
   esp_wifi_set_channel(channels[0], WIFI_SECOND_CHAN_NONE);
+
+  pinMode(BTN_UP, INPUT_PULLUP);
+  pinMode(BTN_DOWN, INPUT_PULLUP);
+  pinMode(BTN_BACK, INPUT_PULLUP);
+  pinMode(BTN_RIGHT, INPUT_PULLUP);
 
   beaconSpamMode = BEACON_SPAM_MENU;
   menuSelection = 0;
   ssidIndex = 0;
-  lastScanTime = millis();
+  beacon_lastScanTime = millis();
   scannedSSIDs.clear();
   drawBeaconSpamMenu();
 }
@@ -218,21 +371,23 @@ void beaconSpamSetup() {
 void beaconSpamLoop() {
   currentTime = millis();
   static unsigned long lastDisplayUpdate = 0;
-  static uint32_t lastButtonCheck = 0;
-  static uint32_t lastRandom = 0;
 
-  bool up = digitalRead(BUTTON_PIN_UP) == LOW;
-  bool down = digitalRead(BUTTON_PIN_DOWN) == LOW;
-  bool left = digitalRead(BUTTON_PIN_LEFT) == LOW;
-  bool right = digitalRead(BUTTON_PIN_RIGHT) == LOW;
+  bool up = digitalRead(BTN_UP) == LOW;
+  bool down = digitalRead(BTN_DOWN) == LOW;
+  bool left = digitalRead(BTN_BACK) == LOW;
+  bool right = digitalRead(BTN_RIGHT) == LOW;
   
   bool anySelected = false;
   for (const auto& entry : scannedSSIDs) if (entry.selected) { anySelected = true; break; }
 
-  if ((beaconSpamMode == BEACON_SPAM_CLONE_ALL || beaconSpamMode == BEACON_SPAM_CLONE_SELECTED) && !anySelected && currentTime - lastScanTime >= SCAN_INTERVAL) {
-    updateSSIDList();
-    lastScanTime = currentTime;
-    if (ssidIndex >= (int)scannedSSIDs.size()) ssidIndex = 0;
+  if ((beaconSpamMode == BEACON_SPAM_CLONE_ALL || beaconSpamMode == BEACON_SPAM_CLONE_SELECTED) && !anySelected && currentTime - beacon_lastScanTime >= SCAN_INTERVAL) {
+    startSSIDScan(beaconSpamMode);
+    return;
+  }
+
+  if (beaconSpamMode == BEACON_SPAM_SCANNING) {
+    updateSSIDScan();
+    return;
   }
 
   switch (beaconSpamMode) {
@@ -248,16 +403,13 @@ void beaconSpamLoop() {
       }
       if (right) {
         if (menuSelection == 0) {
-          beaconSpamMode = BEACON_SPAM_CLONE_ALL;
+          startSSIDScan(BEACON_SPAM_CLONE_ALL);
         } else if (menuSelection == 1) {
-          beaconSpamMode = BEACON_SPAM_CLONE_SELECTED;
+          startSSIDScan(BEACON_SPAM_CLONE_SELECTED);
         } else if (menuSelection == 2) {
           beaconSpamMode = BEACON_SPAM_CUSTOM;
         } else {
           beaconSpamMode = BEACON_SPAM_RANDOM;
-        }
-        if (beaconSpamMode == BEACON_SPAM_CLONE_ALL || beaconSpamMode == BEACON_SPAM_CLONE_SELECTED) {
-          updateSSIDList();
         }
         delay(200);
       }
@@ -266,6 +418,7 @@ void beaconSpamLoop() {
         delay(200);
       }
       break;
+      
     case BEACON_SPAM_CLONE_ALL:
       if (currentTime - lastDisplayUpdate >= 250) {
         lastDisplayUpdate = currentTime;
@@ -280,18 +433,32 @@ void beaconSpamLoop() {
         u8g2.sendBuffer();
       }
       for (const auto& entry : scannedSSIDs) {
+        bool useWPA2 = (random(10) < 4);
+        uint8_t *packet = useWPA2 ? beaconPacketWPA2 : beaconPacketOpen;
+        size_t packetSize = useWPA2 ? sizeof(beaconPacketWPA2) : sizeof(beaconPacketOpen);
+        
         randomMac();
-        memcpy(&beaconPacket[10], macAddr, 6);
-        memcpy(&beaconPacket[16], macAddr, 6);
-        memset(&beaconPacket[38], ' ', 32);
+        memcpy(&packet[10], macAddr, 6);
+        memcpy(&packet[16], macAddr, 6);
+        
+        uint16_t seqNum = random(4096) << 4;
+        packet[22] = seqNum & 0xFF;
+        packet[23] = (seqNum >> 8) & 0xFF;
+        
+        memset(&packet[38], ' ', 32);
         size_t len = strlen(entry.ssid);
-        memcpy(&beaconPacket[38], entry.ssid, len);
-        beaconPacket[37] = len;
-        beaconPacket[82] = entry.channel;
-        uint32_t timestamp = micros();
-        memcpy(&beaconPacket[24], &timestamp, 4);
+        memcpy(&packet[38], entry.ssid, len);
+        packet[37] = len;
+        
+        uint16_t beaconInt = randomBeaconInterval();
+        packet[32] = beaconInt & 0xFF;
+        packet[33] = (beaconInt >> 8) & 0xFF;
+        
+        packet[82] = entry.channel;
+        uint64_t timestamp = (uint64_t)esp_timer_get_time();
+        memcpy(&packet[24], &timestamp, 8);
         esp_wifi_set_channel(entry.channel, WIFI_SECOND_CHAN_NONE);
-        esp_wifi_80211_tx(WIFI_IF_STA, beaconPacket, packetSize, false);
+        esp_wifi_80211_tx(WIFI_IF_STA, packet, packetSize, false);
         delayMicroseconds(100);
       }
       if (left) {
@@ -299,6 +466,7 @@ void beaconSpamLoop() {
         delay(200);
       }
       break;
+      
     case BEACON_SPAM_CLONE_SELECTED:
       drawSSIDList();
       if (up && !scannedSSIDs.empty()) {
@@ -324,18 +492,32 @@ void beaconSpamLoop() {
         if (currentTime - lastBeacon > beaconInterval) {
           for (const auto& entry : scannedSSIDs) {
             if (entry.selected) {
+              bool useWPA2 = (random(10) < 4);
+              uint8_t *packet = useWPA2 ? beaconPacketWPA2 : beaconPacketOpen;
+              size_t packetSize = useWPA2 ? sizeof(beaconPacketWPA2) : sizeof(beaconPacketOpen);
+              
               randomMac();
-              memcpy(&beaconPacket[10], macAddr, 6);
-              memcpy(&beaconPacket[16], macAddr, 6);
-              memset(&beaconPacket[38], ' ', 32);
+              memcpy(&packet[10], macAddr, 6);
+              memcpy(&packet[16], macAddr, 6);
+              
+              uint16_t seqNum = random(4096) << 4;
+              packet[22] = seqNum & 0xFF;
+              packet[23] = (seqNum >> 8) & 0xFF;
+              
+              memset(&packet[38], ' ', 32);
               size_t len = strlen(entry.ssid);
-              memcpy(&beaconPacket[38], entry.ssid, len);
-              beaconPacket[37] = len;
-              beaconPacket[82] = entry.channel;
-              uint32_t timestamp = micros();
-              memcpy(&beaconPacket[24], &timestamp, 4);
+              memcpy(&packet[38], entry.ssid, len);
+              packet[37] = len;
+              
+              uint16_t beaconInt = randomBeaconInterval();
+              packet[32] = beaconInt & 0xFF;
+              packet[33] = (beaconInt >> 8) & 0xFF;
+              
+              packet[82] = entry.channel;
+              uint64_t timestamp = (uint64_t)esp_timer_get_time();
+              memcpy(&packet[24], &timestamp, 8);
               esp_wifi_set_channel(entry.channel, WIFI_SECOND_CHAN_NONE);
-              esp_wifi_80211_tx(WIFI_IF_STA, beaconPacket, packetSize, false);
+              esp_wifi_80211_tx(WIFI_IF_STA, packet, packetSize, false);
               delayMicroseconds(100);
             }
           }
@@ -343,6 +525,7 @@ void beaconSpamLoop() {
         }
       }
       break;
+      
     case BEACON_SPAM_CUSTOM:
       if (currentTime - lastDisplayUpdate >= 250) {
         lastDisplayUpdate = currentTime;
@@ -358,30 +541,34 @@ void beaconSpamLoop() {
       }
       {
         static const int batchSize = 10;
-        static int batchIndices[batchSize] = {0};
+        static int batchIndices[batchSize];
         static int batchCycle = 0;
         static int batchBeacon = 0;
         static uint32_t lastBatch = 0;
         static uint8_t randomBatchesSinceSwitch = 0;
         static int totalSSIDs = -1;
+        
         if (totalSSIDs == -1) {
           totalSSIDs = 0;
           for (int i = 0; i < strlen_P(ssids); i++) {
             if (pgm_read_byte(ssids + i) == '\n') totalSSIDs++;
           }
         }
+        
         if (batchCycle == 0 || batchBeacon >= 10) {
           for (int i = 0; i < batchSize; i++) {
             batchIndices[i] = random(totalSSIDs);
           }
           batchBeacon = 0;
         }
+        
         if (currentTime - lastBatch > 50) {
           lastBatch = currentTime;
           for (int b = 0; b < batchSize; b++) {
             int randomSSID = batchIndices[b];
             int ssidStart = 0;
             int found = 0;
+            
             for (int i = 0; i < strlen_P(ssids); i++) {
               if (pgm_read_byte(ssids + i) == '\n') {
                 if (found == randomSSID) {
@@ -391,28 +578,46 @@ void beaconSpamLoop() {
                 found++;
               }
             }
+            
             int j = 0;
             char tmp;
             do {
               tmp = pgm_read_byte(ssids + ssidStart + j);
               j++;
             } while (tmp != '\n' && j <= 32 && (ssidStart + j) < (int)strlen_P(ssids));
+            
             uint8_t ssidLen = j - 1;
+            
+            bool useWPA2 = (random(10) < 4);
+            uint8_t *packet = useWPA2 ? beaconPacketWPA2 : beaconPacketOpen;
+            size_t packetSize = useWPA2 ? sizeof(beaconPacketWPA2) : sizeof(beaconPacketOpen);
+            
             randomMac();
-            memcpy(&beaconPacket[10], macAddr, 6);
-            memcpy(&beaconPacket[16], macAddr, 6);
-            memcpy(&beaconPacket[38], emptySSID, 32);
+            memcpy(&packet[10], macAddr, 6);
+            memcpy(&packet[16], macAddr, 6);
+            
+            uint16_t seqNum = random(4096) << 4;
+            packet[22] = seqNum & 0xFF;
+            packet[23] = (seqNum >> 8) & 0xFF;
+            
+            memcpy(&packet[38], emptySSID, 32);
             for (int k = 0; k < ssidLen; k++) {
-              beaconPacket[38 + k] = pgm_read_byte(ssids + ssidStart + k);
+              packet[38 + k] = pgm_read_byte(ssids + ssidStart + k);
             }
-            beaconPacket[37] = ssidLen;
-            beaconPacket[82] = wifi_channel;
-            uint32_t timestamp = micros();
-            memcpy(&beaconPacket[24], &timestamp, 4);
-            esp_wifi_80211_tx(WIFI_IF_STA, beaconPacket, packetSize, false);
+            packet[37] = ssidLen;
+            
+            uint16_t beaconInt = randomBeaconInterval();
+            packet[32] = beaconInt & 0xFF;
+            packet[33] = (beaconInt >> 8) & 0xFF;
+            
+            packet[82] = wifi_channel;
+            uint64_t timestamp = (uint64_t)esp_timer_get_time();
+            memcpy(&packet[24], &timestamp, 8);
+            esp_wifi_80211_tx(WIFI_IF_STA, packet, packetSize, false);
           }
           batchBeacon++;
         }
+        
         batchCycle++;
         if (batchCycle >= 10) batchCycle = 0;
         if (++randomBatchesSinceSwitch >= 4) {
@@ -425,6 +630,7 @@ void beaconSpamLoop() {
         delay(200);
       }
       break;
+      
     case BEACON_SPAM_RANDOM:
       if (currentTime - lastDisplayUpdate >= 250) {
         lastDisplayUpdate = currentTime;
@@ -446,25 +652,40 @@ void beaconSpamLoop() {
         
         if (currentTime - lastRandom >= 50) {
           for (int b = 0; b < 10; b++) {
-            String randomSSID = "";
+            char randomSSID[33];
             int length = random(5, 33);
             const char chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
             for (int i = 0; i < length; i++) {
-              randomSSID += chars[random(strlen(chars))];
+              randomSSID[i] = chars[random(strlen(chars))];
             }
+            randomSSID[length] = '\0';
+            
+            bool useWPA2 = (random(10) < 4);
+            uint8_t *packet = useWPA2 ? beaconPacketWPA2 : beaconPacketOpen;
+            size_t packetSize = useWPA2 ? sizeof(beaconPacketWPA2) : sizeof(beaconPacketOpen);
             
             randomMac();
-            memcpy(&beaconPacket[10], macAddr, 6);
-            memcpy(&beaconPacket[16], macAddr, 6);
-            memset(&beaconPacket[38], ' ', 32);
-            uint8_t len = randomSSID.length();
+            memcpy(&packet[10], macAddr, 6);
+            memcpy(&packet[16], macAddr, 6);
+            
+            uint16_t seqNum = random(4096) << 4;
+            packet[22] = seqNum & 0xFF;
+            packet[23] = (seqNum >> 8) & 0xFF;
+            
+            memset(&packet[38], ' ', 32);
+            uint8_t len = length;
             if (len > 32) len = 32;
-            memcpy(&beaconPacket[38], randomSSID.c_str(), len);
-            beaconPacket[37] = len;
-            beaconPacket[82] = wifi_channel;
-            uint32_t timestamp = micros();
-            memcpy(&beaconPacket[24], &timestamp, 4);
-            esp_wifi_80211_tx(WIFI_IF_STA, beaconPacket, packetSize, false);
+            memcpy(&packet[38], randomSSID, len);
+            packet[37] = len;
+            
+            uint16_t beaconInt = randomBeaconInterval();
+            packet[32] = beaconInt & 0xFF;
+            packet[33] = (beaconInt >> 8) & 0xFF;
+            
+            packet[82] = wifi_channel;
+            uint64_t timestamp = (uint64_t)esp_timer_get_time();
+            memcpy(&packet[24], &timestamp, 8);
+            esp_wifi_80211_tx(WIFI_IF_STA, packet, packetSize, false);
           }
           
           if (++randomBatchesSinceSwitch >= 4) {

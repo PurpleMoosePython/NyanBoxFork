@@ -300,17 +300,38 @@ void enterMenu(AppMenuState st);
 void runApp(MenuItem &mi);
 
 void cleanupWiFi() {
-  esp_wifi_stop();
-  delay(50);
-  esp_wifi_start();
-  delay(50);
+  wifi_mode_t mode;
+  if (esp_wifi_get_mode(&mode) == ESP_OK) {
+    esp_wifi_stop();
+    delay(50);
+    esp_wifi_deinit();
+    delay(100);
+  }
+
+  esp_netif_t* sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+  if (sta_netif != NULL) {
+    esp_netif_destroy(sta_netif);
+  }
+
+  esp_netif_t* ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+  if (ap_netif != NULL) {
+    esp_netif_destroy(ap_netif);
+  }
+
+  delay(100);
 }
 
 void cleanupRadio() {
   for (auto &r : radios) r.powerDown();
-  esp_wifi_stop();
-  delay(100);
-  
+
+  wifi_mode_t mode;
+  if (esp_wifi_get_mode(&mode) == ESP_OK) {
+    esp_wifi_stop();
+    delay(50);
+    esp_wifi_deinit();
+    delay(100);
+  }
+
   esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
   if (bt_state == ESP_BLUEDROID_STATUS_ENABLED) {
     esp_bluedroid_disable();
@@ -325,8 +346,6 @@ void cleanupRadio() {
     btStop();
     delay(50);
   }
-
-  esp_wifi_start();
 }
 
 void cleanupBLE() {
@@ -364,7 +383,7 @@ MenuItem wifiMenu[] = {
   { "WiFi Deauther",   nullptr, deauthSetup,             deauthLoop,             cleanupWiFi },
   { "Deauth Scanner",  nullptr, deauthScannerSetup,      deauthScannerLoop,      cleanupWiFi },
   { "Beacon Spam",     nullptr, beaconSpamSetup,         beaconSpamLoop,         cleanupWiFi },
-  { "Evil Portal",     nullptr, evilPortalSetup,         evilPortalLoop,         cleanupWiFi },
+  { "Evil Portal",     nullptr, evilPortalSetup,         evilPortalLoop,         cleanupEvilPortal },
   { "WLAN Jammer",     nullptr, jammerSetup,             jammerLoop,             cleanupRadio },
   { "Pwnagotchi Detector", nullptr, pwnagotchiDetectorSetup, pwnagotchiDetectorLoop, cleanupWiFi },
   { "Pwnagotchi Spam", nullptr, pwnagotchiSpamSetup,     pwnagotchiSpamLoop,     cleanupWiFi },

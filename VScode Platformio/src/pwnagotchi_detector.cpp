@@ -7,6 +7,9 @@
 
 #include "../include/pwnagotchi_detector.h"
 #include "../include/sleep_manager.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include <ArduinoJson.h>
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 
@@ -36,6 +39,7 @@ static const uint8_t channels[] = {1, 6, 11};
 static const int numChannels = sizeof(channels) / sizeof(channels[0]);
 static int currentChannelIndex = 0;
 static uint32_t lastHop = 0;
+static bool wifiWasInitialized = false;
 
 void IRAM_ATTR pwnagotchiSnifferCallback(void *buf, wifi_promiscuous_pkt_type_t type) {
   if (type != WIFI_PKT_MGMT)
@@ -76,6 +80,10 @@ void IRAM_ATTR pwnagotchiSnifferCallback(void *buf, wifi_promiscuous_pkt_type_t 
 
   const char *jsName = doc["name"];
   const char *jsVer = doc["version"];
+  
+  if (!jsName || !jsVer || strlen(jsName) == 0 || strlen(jsVer) == 0)
+    return;
+  
   int jsPwnd = doc["pwnd_tot"];
   bool jsDeauth = doc["policy"]["deauth"];
   int jsUptime = doc["uptime"];
@@ -108,8 +116,23 @@ void pwnagotchiDetectorSetup() {
   u8g2.begin();
   u8g2.setFont(u8g2_font_6x10_tr);
 
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_STA);
+  wifi_mode_t currentMode;
+  if (esp_wifi_get_mode(&currentMode) == ESP_OK) {
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+    wifiWasInitialized = true;
+  } else {
+    wifiWasInitialized = false;
+  }
+
+  if (!wifiWasInitialized) {
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+  }
+
+  esp_wifi_set_mode(WIFI_MODE_STA);
+  esp_wifi_start();
+  
   esp_wifi_set_ps(WIFI_PS_NONE);
 
   pinMode(BTN_UP, INPUT_PULLUP);
@@ -164,14 +187,29 @@ void pwnagotchiDetectorLoop() {
     u8g2.drawStr(0, 20, "Pwnagotchis...");
     u8g2.drawStr(0, 45, "Press SEL to stop");
   } else if (isDetailView) {
-    auto &e = pwnagotchi[currentIndex];
-    u8g2.setFont(u8g2_font_5x8_tr);
-    u8g2.drawStr(0, 10, ("Name: " + e.name).c_str());
-    u8g2.drawStr(0, 20, ("Ver:  " + e.version).c_str());
-    u8g2.drawStr(0, 30, ("Pwnd: " + String(e.pwnd)).c_str());
-    u8g2.drawStr(0, 40, ("Deauth: " + String(e.deauth ? "Yes" : "No")).c_str());
-    u8g2.drawStr(0, 50, ("Uptime: " + String(e.uptime / 60) + "m").c_str());
-    u8g2.drawStr(0, 60, ("Press LEFT to go back"));
+    if (currentIndex >= 0 && currentIndex < (int)pwnagotchi.size()) {
+      auto &e = pwnagotchi[currentIndex];
+      u8g2.setFont(u8g2_font_5x8_tr);
+      
+      String nameLine = "Name: " + (e.name.length() > 0 ? e.name : "Unknown");
+      u8g2.drawStr(0, 10, nameLine.c_str());
+      
+      String verLine = "Ver:  " + (e.version.length() > 0 ? e.version : "Unknown");
+      u8g2.drawStr(0, 20, verLine.c_str());
+      
+      String pwndLine = "Pwnd: " + String(e.pwnd);
+      u8g2.drawStr(0, 30, pwndLine.c_str());
+      
+      String deauthLine = "Deauth: " + String(e.deauth ? "Yes" : "No");
+      u8g2.drawStr(0, 40, deauthLine.c_str());
+      
+      String uptimeLine = "Uptime: " + String(e.uptime / 60) + "m";
+      u8g2.drawStr(0, 50, uptimeLine.c_str());
+      
+      u8g2.drawStr(0, 60, "L=Back SEL=Exit");
+    } else {
+      isDetailView = false;
+    }
   } else {
     u8g2.drawStr(0, 10, "Pwnagotchi list:");
     u8g2.setFont(u8g2_font_6x10_tr);
@@ -182,7 +220,9 @@ void pwnagotchiDetectorLoop() {
       auto &e = pwnagotchi[idx];
       if (idx == currentIndex)
         u8g2.drawStr(0, 20 + i * 10, ">");
-      String line = e.name.substring(0, 7) + " | RSSI " + String(e.rssi);
+      
+      String displayName = e.name.length() > 0 ? e.name : "Unknown";
+      String line = displayName.substring(0, 7) + " | RSSI " + String(e.rssi);
       u8g2.drawStr(10, 20 + i * 10, line.c_str());
     }
   }

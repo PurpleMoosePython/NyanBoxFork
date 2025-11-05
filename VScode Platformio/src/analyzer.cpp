@@ -7,6 +7,7 @@
 #include "../include/analyzer.h"
 #include "../include/sleep_manager.h"
 #include "../include/setting.h"
+#include <esp_bt_main.h>
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 extern Adafruit_NeoPixel pixels;
@@ -88,9 +89,38 @@ void analyzerSetup(){
 
     Serial.begin(115200);
 
-    esp_bt_controller_deinit();
-    esp_wifi_stop();
-    esp_wifi_deinit();
+    esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
+    if (bt_state == ESP_BLUEDROID_STATUS_ENABLED) {
+        esp_bluedroid_disable();
+        delay(50);
+    }
+    if (bt_state != ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+        esp_bluedroid_deinit();
+        delay(50);
+    }
+    
+    if (btStarted()) {
+        btStop();
+        delay(50);
+    }
+
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) == ESP_OK) {
+        esp_wifi_stop();
+        delay(50);
+        esp_wifi_deinit();
+        delay(100);
+    }
+
+    esp_netif_t* sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (sta_netif != NULL) {
+        esp_netif_destroy(sta_netif);
+    }
+
+    esp_netif_t* ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (ap_netif != NULL) {
+        esp_netif_destroy(ap_netif);
+    }
 
     pinMode(CE1, OUTPUT);
     pinMode(CSN1, OUTPUT);
@@ -100,6 +130,7 @@ void analyzerSetup(){
     pinMode(CSN3, OUTPUT);
 
     SPI.begin(18, 19, 23, 17);
+    delay(100);
     SPI.setDataMode(SPI_MODE0);
     SPI.setFrequency(10000000);
     SPI.setBitOrder(MSBFIRST);

@@ -8,6 +8,7 @@
 #include "../include/sleep_manager.h"
 #include "../include/icon.h"
 #include "../include/pindefs.h"
+#include <esp_bt_main.h>
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 
@@ -59,6 +60,8 @@ void configureRadio(RF24 &radio, const byte *channels, size_t size) {
 }
 
 void initializeRadios() {
+  SPI.begin();
+  delay(100);
   if (radio_1.begin()) configureRadio(radio_1, channelGroup_1, sizeof(channelGroup_1));
   if (radio_2.begin()) configureRadio(radio_2, channelGroup_2, sizeof(channelGroup_2));
   if (radio_3.begin()) configureRadio(radio_3, channelGroup_3, sizeof(channelGroup_3));
@@ -126,8 +129,38 @@ static void drawActiveJamming(const char* protocolName) {
 void sigkillSetup() {
   Serial.begin(115200);
 
-  esp_wifi_stop();
-  esp_wifi_disconnect();
+  esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
+  if (bt_state == ESP_BLUEDROID_STATUS_ENABLED) {
+      esp_bluedroid_disable();
+      delay(50);
+  }
+  if (bt_state != ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+      esp_bluedroid_deinit();
+      delay(50);
+  }
+  
+  if (btStarted()) {
+      btStop();
+      delay(50);
+  }
+
+  wifi_mode_t mode;
+  if (esp_wifi_get_mode(&mode) == ESP_OK) {
+      esp_wifi_stop();
+      delay(50);
+      esp_wifi_deinit();
+      delay(100);
+  }
+
+  esp_netif_t* sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+  if (sta_netif != NULL) {
+      esp_netif_destroy(sta_netif);
+  }
+
+  esp_netif_t* ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+  if (ap_netif != NULL) {
+      esp_netif_destroy(ap_netif);
+  }
 
   pinMode(BUTTON_PIN_UP, INPUT_PULLUP);
   pinMode(BUTTON_PIN_DOWN, INPUT_PULLUP);

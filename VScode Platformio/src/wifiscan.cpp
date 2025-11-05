@@ -5,8 +5,13 @@
 
 #include "../include/wifiscan.h"
 #include "../include/sleep_manager.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include <vector>
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
+
+namespace {
 
 #define BTN_UP BUTTON_PIN_UP
 #define BTN_DOWN BUTTON_PIN_DOWN
@@ -14,15 +19,15 @@ extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 #define BTN_BACK BUTTON_PIN_LEFT
 
 struct WiFiNetworkData {
-  char ssid[32];
+  char ssid[33];
   char bssid[18];
   int8_t rssi;
   uint8_t channel;
   uint8_t encryption;
   unsigned long lastSeen;
-  char authMode[16];
+  char authMode[20];
 };
-static std::vector<WiFiNetworkData> wifiNetworks;
+std::vector<WiFiNetworkData> wifiNetworks;
 
 const int MAX_NETWORKS = 100;
 
@@ -32,129 +37,258 @@ bool isDetailView = false;
 unsigned long lastButtonPress = 0;
 const unsigned long debounceTime = 200;
 
-static bool isScanning = false;
-static unsigned long lastScanTime = 0;
+bool wifiscan_isScanning = false;
+unsigned long wifiscan_lastScanTime = 0;
+unsigned long wifiscan_scanStartTime = 0;
+unsigned long wifiscan_lastDisplayUpdate = 0;
 const unsigned long scanInterval = 180000;
+const unsigned long scanDuration = 8000;
+const unsigned long displayUpdateInterval = 100;
 
-const char* getAuthModeString(uint8_t encType) {
-    switch (encType) {
+bool wifiscan_scanCompleted = false;
+uint16_t wifiscan_lastApCount = 0;
+
+const char* getAuthModeString(wifi_auth_mode_t authMode) {
+    switch (authMode) {
         case WIFI_AUTH_OPEN: return "Open";
         case WIFI_AUTH_WEP: return "WEP";
         case WIFI_AUTH_WPA_PSK: return "WPA-PSK";
         case WIFI_AUTH_WPA2_PSK: return "WPA2-PSK";
-        case WIFI_AUTH_WPA_WPA2_PSK: return "WPA/WPA2-PSK";
-        case WIFI_AUTH_WPA2_ENTERPRISE: return "WPA2-Enterprise";
+        case WIFI_AUTH_WPA_WPA2_PSK: return "WPA/WPA2";
+        case WIFI_AUTH_WPA2_ENTERPRISE: return "WPA2-Ent";
         case WIFI_AUTH_WPA3_PSK: return "WPA3-PSK";
-        case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2/WPA3-PSK";
+        case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2/WPA3";
         case WIFI_AUTH_WAPI_PSK: return "WAPI-PSK";
         default: return "Unknown";
     }
 }
 
+void bssid_to_string(uint8_t *bssid, char *str, size_t size) {
+    if (bssid == NULL || str == NULL || size < 18) {
+        return;
+    }
+    snprintf(str, size, "%02x:%02x:%02x:%02x:%02x:%02x",
+             bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+}
+
+void processScanResults(unsigned long now) {
+    uint16_t number = 0;
+    esp_wifi_scan_get_ap_num(&number);
+    
+    if (number == 0) return;
+    
+    wifi_ap_record_t *ap_info = (wifi_ap_record_t *)malloc(sizeof(wifi_ap_record_t) * number);
+    
+    if (ap_info == NULL) return;
+    
+    memset(ap_info, 0, sizeof(wifi_ap_record_t) * number);
+    
+    uint16_t actual_number = number;
+    esp_err_t err = esp_wifi_scan_get_ap_records(&actual_number, ap_info);
+    
+    if (err == ESP_OK) {
+        for (int i = 0; i < actual_number && wifiNetworks.size() < MAX_NETWORKS; i++) {
+            if (ap_info[i].ssid[0] == '\0') {
+                continue;
+            }
+            
+            char bssidStr[18];
+            bssid_to_string(ap_info[i].bssid, bssidStr, sizeof(bssidStr));
+            
+            bool found = false;
+            for (auto &net : wifiNetworks) {
+                if (strcmp(net.bssid, bssidStr) == 0) {
+                    net.rssi = ap_info[i].rssi;
+                    net.lastSeen = now;
+                    strncpy(net.ssid, (char*)ap_info[i].ssid, sizeof(net.ssid) - 1);
+                    net.ssid[sizeof(net.ssid) - 1] = '\0';
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                WiFiNetworkData newNetwork;
+                memset(&newNetwork, 0, sizeof(newNetwork));
+                strncpy(newNetwork.bssid, bssidStr, sizeof(newNetwork.bssid) - 1);
+                newNetwork.bssid[sizeof(newNetwork.bssid) - 1] = '\0';
+                newNetwork.rssi = ap_info[i].rssi;
+                newNetwork.channel = ap_info[i].primary;
+                newNetwork.encryption = ap_info[i].authmode;
+                newNetwork.lastSeen = now;
+                
+                strncpy(newNetwork.authMode, getAuthModeString(ap_info[i].authmode), sizeof(newNetwork.authMode) - 1);
+                newNetwork.authMode[sizeof(newNetwork.authMode) - 1] = '\0';
+                
+                strncpy(newNetwork.ssid, (char*)ap_info[i].ssid, sizeof(newNetwork.ssid) - 1);
+                newNetwork.ssid[sizeof(newNetwork.ssid) - 1] = '\0';
+                
+                wifiNetworks.push_back(newNetwork);
+            }
+        }
+
+        std::sort(wifiNetworks.begin(), wifiNetworks.end(),
+                [](const WiFiNetworkData &a, const WiFiNetworkData &b) {
+                    return a.rssi > b.rssi;
+                });
+    }
+    
+    free(ap_info);
+}
+
+}
+
 void wifiscanSetup() {
   wifiNetworks.clear();
+  wifiNetworks.reserve(MAX_NETWORKS);
   currentIndex = listStartIndex = 0;
   isDetailView = false;
   lastButtonPress = 0;
-  isScanning = false;
+  wifiscan_isScanning = false;
+  wifiscan_scanCompleted = false;
+  wifiscan_lastApCount = 0;
+  wifiscan_lastDisplayUpdate = 0;
 
   u8g2.begin();
   u8g2.setFont(u8g2_font_6x10_tr);
   u8g2.clearBuffer();
   u8g2.drawStr(0, 10, "Scanning for");
   u8g2.drawStr(0, 20, "WiFi networks...");
+  char countStr[32];
+  snprintf(countStr, sizeof(countStr), "%d/%d networks", 0, MAX_NETWORKS);
+  u8g2.drawStr(0, 35, countStr);
+  u8g2.setFont(u8g2_font_5x8_tr);
+  u8g2.drawStr(0, 60, "Press SEL to exit");
   u8g2.sendBuffer();
 
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  esp_wifi_init(&cfg);
+  esp_wifi_set_mode(WIFI_MODE_STA);
+  esp_wifi_start();
   
   pinMode(BTN_UP, INPUT_PULLUP);
   pinMode(BTN_DOWN, INPUT_PULLUP);
   pinMode(BTN_RIGHT, INPUT_PULLUP);
   pinMode(BTN_BACK, INPUT_PULLUP);
   
-  WiFi.scanNetworks(true);
-  isScanning = true;
-  lastScanTime = millis();
+  // Start scan
+  wifi_scan_config_t scan_config = {
+    .ssid = NULL,
+    .bssid = NULL,
+    .channel = 0,
+    .show_hidden = false,
+    .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+    .scan_time = {
+      .active = {
+        .min = 120,
+        .max = 200
+      }
+    }
+  };
+  
+  esp_wifi_scan_start(&scan_config, false);
+  wifiscan_isScanning = true;
+  wifiscan_scanStartTime = millis();
+  wifiscan_lastScanTime = millis();
 }
 
 void wifiscanLoop() {
   unsigned long now = millis();
 
-  if (isScanning && now - lastScanTime > 5000) {
-    int foundNetworks = WiFi.scanComplete();
-    if (foundNetworks >= 0) {
-              for (int i = 0; i < foundNetworks && wifiNetworks.size() < MAX_NETWORKS; i++) {
-          String ssid = WiFi.SSID(i);
-          String bssid = WiFi.BSSIDstr(i);
-          int8_t rssi = WiFi.RSSI(i);
-          uint8_t channel = WiFi.channel(i);
-          uint8_t encryption = WiFi.encryptionType(i);
-
-          bool found = false;
-          for (auto &net : wifiNetworks) {
-            if (strcmp(net.bssid, bssid.c_str()) == 0) {
-              net.rssi = rssi;
-              net.lastSeen = now;
-              if (!ssid.isEmpty()) {
-                strncpy(net.ssid, ssid.c_str(), sizeof(net.ssid) - 1);
-                net.ssid[sizeof(net.ssid) - 1] = '\0';
-              }
-              found = true;
-              break;
-            }
-          }
-
-          if (!found) {
-            WiFiNetworkData newNetwork;
-            memset(&newNetwork, 0, sizeof(newNetwork));
-            strncpy(newNetwork.bssid, bssid.c_str(), sizeof(newNetwork.bssid) - 1);
-            newNetwork.rssi = rssi;
-            newNetwork.channel = channel;
-            newNetwork.encryption = encryption;
-            newNetwork.lastSeen = now;
-            
-            strncpy(newNetwork.authMode, getAuthModeString(encryption), sizeof(newNetwork.authMode) - 1);
-            newNetwork.authMode[sizeof(newNetwork.authMode) - 1] = '\0';
-            
-            if (!ssid.isEmpty()) {
-              strncpy(newNetwork.ssid, ssid.c_str(), sizeof(newNetwork.ssid) - 1);
-              newNetwork.ssid[sizeof(newNetwork.ssid) - 1] = '\0';
-            } else {
-              strcpy(newNetwork.ssid, "Hidden");
-            }
-            wifiNetworks.push_back(newNetwork);
-          }
-        }
-
-        if (wifiNetworks.size() >= MAX_NETWORKS) {
-          isScanning = false;
-          lastScanTime = now;
-        }
-
-      std::sort(wifiNetworks.begin(), wifiNetworks.end(),
-                [](const WiFiNetworkData &a, const WiFiNetworkData &b) {
-                  return a.rssi > b.rssi;
-                });
-
-      isScanning = false;
-      lastScanTime = now;
+  if (wifiscan_isScanning) {
+    uint16_t currentApCount = 0;
+    esp_wifi_scan_get_ap_num(&currentApCount);
+    
+    if (currentApCount > wifiscan_lastApCount) {
+      processScanResults(now);
+      wifiscan_lastApCount = currentApCount;
     }
-  } else if (!isScanning && now - lastScanTime > scanInterval && wifiNetworks.size() < MAX_NETWORKS) {
-    wifiNetworks.clear();
-    WiFi.scanNetworks(true);
-    isScanning = true;
-    lastScanTime = now;
+    
+    if (now - wifiscan_lastDisplayUpdate > displayUpdateInterval) {
+      u8g2.clearBuffer();
+      u8g2.setFont(u8g2_font_6x10_tr);
+      u8g2.drawStr(0, 10, "Scanning for");
+      u8g2.drawStr(0, 20, "WiFi networks...");
+      
+      char countStr[32];
+      snprintf(countStr, sizeof(countStr), "%d/%d networks", (int)wifiNetworks.size(), MAX_NETWORKS);
+      u8g2.drawStr(0, 35, countStr);
+      
+      int barWidth = 120;
+      int barHeight = 10;
+      int barX = (128 - barWidth) / 2;
+      int barY = 42;
+      
+      u8g2.drawFrame(barX, barY, barWidth, barHeight);
+      
+      int fillWidth = (wifiNetworks.size() * (barWidth - 4)) / MAX_NETWORKS;
+      if (fillWidth > 0) {
+        u8g2.drawBox(barX + 2, barY + 2, fillWidth, barHeight - 4);
+      }
+      
+      u8g2.setFont(u8g2_font_5x8_tr);
+      u8g2.drawStr(0, 62, "Press SEL to exit");
+      u8g2.sendBuffer();
+      
+      wifiscan_lastDisplayUpdate = now;
+    }
+    
+    if (now - wifiscan_scanStartTime > scanDuration) {
+      processScanResults(now);
+      
+      wifiscan_isScanning = false;
+      wifiscan_scanCompleted = true;
+      wifiscan_lastScanTime = now;
+      wifiscan_lastApCount = 0;
+      esp_wifi_scan_stop();
+    }
+    
+    return;
   }
 
-  static bool showingRefresh = false;
-  if (!isScanning && now - lastScanTime > scanInterval - 1000) {
-    showingRefresh = true;
-  } else if (isScanning && showingRefresh) {
-    showingRefresh = false;
+  if (!wifiscan_isScanning && wifiscan_scanCompleted && now - wifiscan_lastScanTime > scanInterval) {
+    if (wifiNetworks.size() >= MAX_NETWORKS) {
+      std::sort(wifiNetworks.begin(), wifiNetworks.end(),
+              [](const WiFiNetworkData &a, const WiFiNetworkData &b) {
+                  if (a.lastSeen != b.lastSeen) {
+                      return a.lastSeen < b.lastSeen;
+                  }
+                  return a.rssi < b.rssi;
+              });
+      
+      int networksToRemove = MAX_NETWORKS / 4;
+      if (networksToRemove > 0) {
+          wifiNetworks.erase(wifiNetworks.begin(), 
+                            wifiNetworks.begin() + networksToRemove);
+      }
+      
+      currentIndex = listStartIndex = 0;
+    }
+    
+    wifi_scan_config_t scan_config = {
+      .ssid = NULL,
+      .bssid = NULL,
+      .channel = 0,
+      .show_hidden = false,
+      .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+      .scan_time = {
+        .active = {
+          .min = 120,
+          .max = 200
+        }
+      }
+    };
+    
+    wifiscan_scanCompleted = false;
+    esp_wifi_scan_start(&scan_config, false);
+    wifiscan_isScanning = true;
+    wifiscan_scanStartTime = now;
+    wifiscan_lastScanTime = now;
+    wifiscan_lastApCount = 0;
+    return;
   }
 
-  if (now - lastButtonPress > debounceTime) {
+  if (wifiscan_scanCompleted && now - lastButtonPress > debounceTime) {
     if (!isDetailView && digitalRead(BTN_UP) == LOW && currentIndex > 0) {
       --currentIndex;
       if (currentIndex < listStartIndex)
@@ -186,37 +320,43 @@ void wifiscanLoop() {
   }
 
   u8g2.clearBuffer();
-  if (showingRefresh) {
-    u8g2.drawStr(0, 10, "Refreshing");
-    u8g2.drawStr(0, 20, "WiFi networks...");
-    u8g2.sendBuffer();
-  } else if (wifiNetworks.empty()) {
-    u8g2.drawStr(0, 10, "Scanning for");
-    u8g2.drawStr(0, 20, "WiFi networks...");
-    u8g2.drawStr(0, 45, "Press SEL to stop");
+  
+  if (wifiNetworks.empty()) {
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(0, 10, "No networks found");
+    u8g2.setFont(u8g2_font_5x8_tr);
+    char timeStr[32];
+    unsigned long timeLeft = (scanInterval - (now - wifiscan_lastScanTime)) / 1000;
+    snprintf(timeStr, sizeof(timeStr), "Scanning in %lus", timeLeft);
+    u8g2.drawStr(0, 30, timeStr);
+    u8g2.drawStr(0, 45, "Press SEL to exit");
   } else if (isDetailView) {
     auto &net = wifiNetworks[currentIndex];
     u8g2.setFont(u8g2_font_5x8_tr);
-    char buf[32];
+    char buf[40];
+    
     snprintf(buf, sizeof(buf), "SSID: %s", net.ssid);
     u8g2.drawStr(0, 10, buf);
+    
     snprintf(buf, sizeof(buf), "BSSID: %s", net.bssid);
     u8g2.drawStr(0, 20, buf);
-    snprintf(buf, sizeof(buf), "RSSI: %d", net.rssi);
+    
+    snprintf(buf, sizeof(buf), "RSSI: %d dBm", net.rssi);
     u8g2.drawStr(0, 30, buf);
-    snprintf(buf, sizeof(buf), "Channel: %d", net.channel);
+    
+    snprintf(buf, sizeof(buf), "Ch: %d  Auth: %s", net.channel, net.authMode);
     u8g2.drawStr(0, 40, buf);
-    snprintf(buf, sizeof(buf), "Auth: %s", net.authMode);
+    
+    snprintf(buf, sizeof(buf), "Age: %lus", (now - net.lastSeen) / 1000);
     u8g2.drawStr(0, 50, buf);
-    snprintf(buf, sizeof(buf), "%lus", (now - net.lastSeen) / 1000);
-    int ageWidth = u8g2.getUTF8Width(buf);
-    u8g2.drawStr(128 - ageWidth, 60, buf);
-    u8g2.drawStr(0, 60, "<- Back");
+    
+    u8g2.drawStr(0, 62, "L=Back SEL=Exit");
   } else {
     u8g2.setFont(u8g2_font_6x10_tr);
     char header[32];
-    snprintf(header, sizeof(header), "WiFi Networks: %d/%d", (int)wifiNetworks.size(), MAX_NETWORKS);
+    snprintf(header, sizeof(header), "WiFi: %d/%d", (int)wifiNetworks.size(), MAX_NETWORKS);
     u8g2.drawStr(0, 10, header);
+    
     for (int i = 0; i < 5; ++i) {
       int idx = listStartIndex + i;
       if (idx >= (int)wifiNetworks.size())
@@ -226,7 +366,7 @@ void wifiscanLoop() {
         u8g2.drawStr(0, 20 + i * 10, ">");
       char line[32];
       snprintf(line, sizeof(line), "%.8s | RSSI %d",
-               n.ssid[0] ? n.ssid : "Hidden", n.rssi);
+               n.ssid[0] ? n.ssid : "Unknown", n.rssi);
       u8g2.drawStr(10, 20 + i * 10, line);
     }
   }

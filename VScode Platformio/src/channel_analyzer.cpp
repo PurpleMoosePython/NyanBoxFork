@@ -6,8 +6,15 @@
 
 #include "../include/channel_analyzer.h"
 #include "../include/sleep_manager.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
+
+#define BTN_UP BUTTON_PIN_UP
+#define BTN_DOWN BUTTON_PIN_DOWN
+#define BTN_RIGHT BUTTON_PIN_RIGHT
+#define BTN_BACK BUTTON_PIN_LEFT
 
 #define MAX_CHANNELS 14
 #define SCAN_INTERVAL 60000
@@ -22,38 +29,53 @@ struct ChannelInfo {
 
 static ChannelInfo channels[MAX_CHANNELS];
 static unsigned long lastScanTime = 0;
+static unsigned long scanStartTime = 0;
+static unsigned long lastDisplayUpdate = 0;
+static unsigned long lastButtonPress = 0;
+const unsigned long debounceTime = 200;
+const unsigned long displayUpdateInterval = 100;
+const unsigned long scanDuration = 8000;
+
 static int currentView = 0;
 static bool scanInProgress = false;
+static uint16_t lastApCount = 0;
+static int scannedNetworks = 0;
+
+const char* getSignalStrengthLabel(int rssi) {
+    if (rssi > -50) return "Strong";
+    if (rssi > -70) return "Medium";
+    return "Weak";
+}
 
 void initChannelData() {
     for (int i = 0; i < MAX_CHANNELS; i++) {
         channels[i].networkCount = 0;
         channels[i].maxRSSI = -100;
     }
+    scannedNetworks = 0;
 }
 
-void performChannelScan() {
-    if (scanInProgress) return;
+void processChannelScanResults(unsigned long now) {
+    uint16_t number = 0;
+    esp_wifi_scan_get_ap_num(&number);
     
-    scanInProgress = true;
-    initChannelData();
+    if (number == 0) return;
     
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_helvR08_tr);
-    const char* scanText = "Scanning Networks...";
-    int scanWidth = u8g2.getUTF8Width(scanText);
-    u8g2.drawStr((128 - scanWidth) / 2, 32, scanText);
-    u8g2.sendBuffer();
+    wifi_ap_record_t *ap_info = (wifi_ap_record_t *)malloc(sizeof(wifi_ap_record_t) * number);
     
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    delay(100);
+    if (ap_info == NULL) return;
     
-    int n = WiFi.scanNetworks(false, true);
-    if (n > 0) {
-        for (int i = 0; i < n; i++) {
-            int channel = WiFi.channel(i);
-            int rssi = WiFi.RSSI(i);
+    memset(ap_info, 0, sizeof(wifi_ap_record_t) * number);
+    
+    uint16_t actual_number = number;
+    esp_err_t err = esp_wifi_scan_get_ap_records(&actual_number, ap_info);
+    
+    if (err == ESP_OK) {
+        scannedNetworks = actual_number;
+        
+        for (int i = 0; i < actual_number; i++) {
+            int channel = ap_info[i].primary;
+            int rssi = ap_info[i].rssi;
             
             if (channel >= 1 && channel <= 14) {
                 int idx = channel - 1;
@@ -65,20 +87,33 @@ void performChannelScan() {
             }
         }
     }
-    WiFi.scanDelete();
-    scanInProgress = false;
+    
+    free(ap_info);
 }
 
-void drawChannelBars() {
-    u8g2.clearBuffer();
+void performChannelScan() {
+    if (scanInProgress) return;
+
+    scanInProgress = true;
+    initChannelData();
+
+    wifi_scan_config_t scan_config = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = true,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time = {
+            .active = {
+                .min = 120,
+                .max = 200
+            }
+        }
+    };
     
-    if (currentView == 0) {
-        drawNetworkCountView();
-    } else {
-        drawSignalStrengthView();
-    }
-    
-    u8g2.sendBuffer();
+    esp_wifi_scan_start(&scan_config, false);
+    scanStartTime = millis();
+    lastApCount = 0;
 }
 
 void drawNetworkCountView() {
@@ -161,15 +196,7 @@ void drawSignalStrengthView() {
     u8g2.drawStr((128 - instWidth) / 2, 62, instructions);
 }
 
-const char* getSignalStrengthLabel(int rssi) {
-    if (rssi > -50) return "Strong";
-    if (rssi > -70) return "Medium";
-    return "Weak";
-}
-
 void drawSummaryView() {
-    u8g2.clearBuffer();
-    
     u8g2.setFont(u8g2_font_helvB08_tr);
     const char* title = "Overview";
     int titleWidth = u8g2.getUTF8Width(title);
@@ -222,21 +249,32 @@ void drawSummaryView() {
     const char* instructions = "U/D=Move R=SCN SEL=EXIT";
     int instWidth = u8g2.getUTF8Width(instructions);
     u8g2.drawStr((128 - instWidth) / 2, 62, instructions);
-    
-    u8g2.sendBuffer();
 }
 
 void channelAnalyzerSetup() {
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    
-    pinMode(BUTTON_PIN_UP, INPUT_PULLUP);
-    pinMode(BUTTON_PIN_DOWN, INPUT_PULLUP);
-    pinMode(BUTTON_PIN_RIGHT, INPUT_PULLUP);
-    
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_start();
+
+    pinMode(BTN_UP, INPUT_PULLUP);
+    pinMode(BTN_DOWN, INPUT_PULLUP);
+    pinMode(BTN_RIGHT, INPUT_PULLUP);
+    pinMode(BTN_BACK, INPUT_PULLUP);
+
     currentView = 0;
     lastScanTime = 0;
+    lastButtonPress = 0;
+    scanInProgress = false;
     initChannelData();
+    
+    u8g2.begin();
+    u8g2.setFont(u8g2_font_helvR08_tr);
+    u8g2.clearBuffer();
+    const char* scanText = "Scanning Networks...";
+    int scanWidth = u8g2.getUTF8Width(scanText);
+    u8g2.drawStr((128 - scanWidth) / 2, 32, scanText);
+    u8g2.sendBuffer();
     
     performChannelScan();
     lastScanTime = millis();
@@ -244,45 +282,84 @@ void channelAnalyzerSetup() {
 
 void channelAnalyzerLoop() {
     unsigned long now = millis();
+
+    if (scanInProgress) {
+        uint16_t currentApCount = 0;
+        esp_wifi_scan_get_ap_num(&currentApCount);
+        scannedNetworks = currentApCount;
+
+        if (now - lastDisplayUpdate > displayUpdateInterval) {
+            u8g2.clearBuffer();
+            u8g2.setFont(u8g2_font_helvR08_tr);
+            const char* scanText = "Scanning Networks...";
+            int scanWidth = u8g2.getUTF8Width(scanText);
+            u8g2.drawStr((128 - scanWidth) / 2, 10, scanText);
+
+            char countStr[32];
+            snprintf(countStr, sizeof(countStr), "Found: %d networks", scannedNetworks);
+            int countWidth = u8g2.getUTF8Width(countStr);
+            u8g2.drawStr((128 - countWidth) / 2, 25, countStr);
+
+            int barWidth = 120;
+            int barHeight = 10;
+            int barX = 4;
+            int barY = 35;
+            u8g2.drawFrame(barX, barY, barWidth, barHeight);
+
+            unsigned long elapsed = now - scanStartTime;
+            int fillWidth = ((elapsed * (barWidth - 4)) / scanDuration);
+            if (fillWidth > (barWidth - 4)) fillWidth = barWidth - 4;
+            if (fillWidth > 0) {
+                u8g2.drawBox(barX + 2, barY + 2, fillWidth, barHeight - 4);
+            }
+
+            u8g2.setFont(u8g2_font_5x8_tr);
+            const char* cancelText = "Press SEL to exit";
+            int cancelWidth = u8g2.getUTF8Width(cancelText);
+            u8g2.drawStr((128 - cancelWidth) / 2, 60, cancelText);
+            u8g2.sendBuffer();
+
+            lastDisplayUpdate = now;
+        }
+        
+        if (now - scanStartTime > scanDuration) {
+            processChannelScanResults(now);
+            scanInProgress = false;
+            lastScanTime = now;
+            lastApCount = 0;
+            esp_wifi_scan_stop();
+        }
+        
+        return;
+    }
     
     if (now - lastScanTime >= SCAN_INTERVAL) {
         performChannelScan();
-        lastScanTime = now;
+        return;
     }
     
-    static bool upPressed = false;
-    static bool downPressed = false;
-    static bool rightPressed = false;
-    
-    bool upNow = digitalRead(BUTTON_PIN_UP) == LOW;
-    bool downNow = digitalRead(BUTTON_PIN_DOWN) == LOW;
-    bool rightNow = digitalRead(BUTTON_PIN_RIGHT) == LOW;
-    
-    if (upNow && !upPressed) {
-        currentView = (currentView - 1 + 3) % 3;
-        delay(200);
+    if (now - lastButtonPress > debounceTime) {
+        if (digitalRead(BTN_UP) == LOW) {
+            currentView = (currentView - 1 + 3) % 3;
+            lastButtonPress = now;
+        } else if (digitalRead(BTN_DOWN) == LOW) {
+            currentView = (currentView + 1) % 3;
+            lastButtonPress = now;
+        } else if (digitalRead(BTN_RIGHT) == LOW) {
+            performChannelScan();
+            lastButtonPress = now;
+        }
     }
     
-    if (downNow && !downPressed) {
-        currentView = (currentView + 1) % 3;
-        delay(200);
-    }
+    u8g2.clearBuffer();
     
-    if (rightNow && !rightPressed) {
-        performChannelScan();
-        lastScanTime = now;
-        delay(200);
-    }
-    
-    upPressed = upNow;
-    downPressed = downNow;
-    rightPressed = rightNow;
-    
-    if (currentView == 2) {
-        drawSummaryView();
+    if (currentView == 0) {
+        drawNetworkCountView();
+    } else if (currentView == 1) {
+        drawSignalStrengthView();
     } else {
-        drawChannelBars();
+        drawSummaryView();
     }
     
-    delay(50);
+    u8g2.sendBuffer();
 }
