@@ -32,6 +32,8 @@ static std::vector<PwnagotchiData> pwnagotchi;
 int currentIndex = 0;
 int listStartIndex = 0;
 bool isDetailView = false;
+bool isLocateMode = false;
+String locateTargetName = "";
 unsigned long lastButtonPress = 0;
 const unsigned long debounceTime = 200;
 
@@ -90,6 +92,12 @@ void IRAM_ATTR pwnagotchiSnifferCallback(void *buf, wifi_promiscuous_pkt_type_t 
   int ch = pkt->rx_ctrl.channel;
   int rssi = pkt->rx_ctrl.rssi;
 
+  if (isLocateMode && locateTargetName.length() > 0) {
+    if (String(jsName) != locateTargetName) {
+      return;
+    }
+  }
+
   for (auto &e : pwnagotchi) {
     if (e.name == jsName) {
       e.version = jsVer;
@@ -102,8 +110,10 @@ void IRAM_ATTR pwnagotchiSnifferCallback(void *buf, wifi_promiscuous_pkt_type_t 
     }
   }
 
-  pwnagotchi.push_back(
-      {String(jsName), String(jsVer), jsPwnd, jsDeauth, jsUptime, ch, rssi});
+  if (!isLocateMode) {
+    pwnagotchi.push_back(
+        {String(jsName), String(jsVer), jsPwnd, jsDeauth, jsUptime, ch, rssi});
+  }
 }
 
 void pwnagotchiDetectorSetup() {
@@ -111,6 +121,8 @@ void pwnagotchiDetectorSetup() {
   currentIndex = 0;
   listStartIndex = 0;
   isDetailView = false;
+  isLocateMode = false;
+  locateTargetName = "";
   lastButtonPress = 0;
 
   u8g2.begin();
@@ -159,25 +171,42 @@ void pwnagotchiDetectorLoop() {
   }
 
   if (now - lastButtonPress > debounceTime) {
-    if (!isDetailView && digitalRead(BTN_UP) == LOW && currentIndex > 0) {
+    if (!isDetailView && !isLocateMode && digitalRead(BTN_UP) == LOW && currentIndex > 0) {
       --currentIndex;
       if (currentIndex < listStartIndex)
         --listStartIndex;
       lastButtonPress = now;
-    } else if (!isDetailView && digitalRead(BTN_DOWN) == LOW &&
+    } else if (!isDetailView && !isLocateMode && digitalRead(BTN_DOWN) == LOW &&
                currentIndex < (int)pwnagotchi.size() - 1) {
       ++currentIndex;
       if (currentIndex >= listStartIndex + 5)
         ++listStartIndex;
       lastButtonPress = now;
-    } else if (!isDetailView && digitalRead(BTN_SELECT) == LOW) {
+    } else if (!isDetailView && !isLocateMode && digitalRead(BTN_SELECT) == LOW &&
+               !pwnagotchi.empty()) {
       isDetailView = true;
       lastButtonPress = now;
-    } else if (digitalRead(BTN_BACK) == LOW) {
-      if (isDetailView)
-        isDetailView = false;
+    } else if (isDetailView && !isLocateMode && digitalRead(BTN_SELECT) == LOW &&
+               !pwnagotchi.empty()) {
+      isLocateMode = true;
+      locateTargetName = pwnagotchi[currentIndex].name;
+      lastButtonPress = now;
+    } else if (isLocateMode && digitalRead(BTN_BACK) == LOW) {
+      isLocateMode = false;
+      locateTargetName = "";
+      lastButtonPress = now;
+    } else if (isDetailView && !isLocateMode && digitalRead(BTN_BACK) == LOW) {
+      isDetailView = false;
       lastButtonPress = now;
     }
+  }
+
+  if (pwnagotchi.empty()) {
+    currentIndex = 0;
+    listStartIndex = 0;
+    isDetailView = false;
+    isLocateMode = false;
+    locateTargetName = "";
   }
 
   u8g2.clearBuffer();
@@ -186,27 +215,81 @@ void pwnagotchiDetectorLoop() {
     u8g2.drawStr(0, 10, "Scanning for");
     u8g2.drawStr(0, 20, "Pwnagotchis...");
     u8g2.drawStr(0, 45, "Press SEL to stop");
+  } else if (isLocateMode) {
+    if (currentIndex >= 0 && currentIndex < (int)pwnagotchi.size()) {
+      auto &e = pwnagotchi[currentIndex];
+      u8g2.setFont(u8g2_font_5x8_tr);
+      char buf[32];
+
+      String displayName = e.name.length() > 0 ? e.name : "Unknown";
+      snprintf(buf, sizeof(buf), "%.21s", displayName.c_str());
+      u8g2.drawStr(0, 8, buf);
+
+      String verLine = "Ver: " + (e.version.length() > 0 ? e.version : "?");
+      u8g2.drawStr(0, 16, verLine.c_str());
+
+      u8g2.setFont(u8g2_font_7x13B_tr);
+      snprintf(buf, sizeof(buf), "RSSI: %d dBm", e.rssi);
+      u8g2.drawStr(0, 28, buf);
+
+      u8g2.setFont(u8g2_font_5x8_tr);
+      int rssiClamped = constrain(e.rssi, -100, -40);
+      int signalLevel = map(rssiClamped, -100, -40, 0, 5);
+
+      const char* quality;
+      if (signalLevel >= 5) quality = "EXCELLENT";
+      else if (signalLevel >= 4) quality = "VERY GOOD";
+      else if (signalLevel >= 3) quality = "GOOD";
+      else if (signalLevel >= 2) quality = "FAIR";
+      else if (signalLevel >= 1) quality = "WEAK";
+      else quality = "VERY WEAK";
+
+      snprintf(buf, sizeof(buf), "Signal: %s", quality);
+      u8g2.drawStr(0, 38, buf);
+
+      int barWidth = 12;
+      int barSpacing = 5;
+      int totalWidth = (barWidth * 5) + (barSpacing * 4);
+      int startX = (128 - totalWidth) / 2;
+      int baseY = 54;
+
+      for (int i = 0; i < 5; i++) {
+        int barHeight = 8 + (i * 2);
+        int x = startX + (i * (barWidth + barSpacing));
+        int y = baseY - barHeight;
+
+        if (i < signalLevel) {
+          u8g2.drawBox(x, y, barWidth, barHeight);
+        } else {
+          u8g2.drawFrame(x, y, barWidth, barHeight);
+        }
+      }
+
+      u8g2.drawStr(0, 62, "L=Back SEL=Exit");
+    } else {
+      isLocateMode = false;
+    }
   } else if (isDetailView) {
     if (currentIndex >= 0 && currentIndex < (int)pwnagotchi.size()) {
       auto &e = pwnagotchi[currentIndex];
       u8g2.setFont(u8g2_font_5x8_tr);
-      
+
       String nameLine = "Name: " + (e.name.length() > 0 ? e.name : "Unknown");
       u8g2.drawStr(0, 10, nameLine.c_str());
-      
+
       String verLine = "Ver:  " + (e.version.length() > 0 ? e.version : "Unknown");
       u8g2.drawStr(0, 20, verLine.c_str());
-      
+
       String pwndLine = "Pwnd: " + String(e.pwnd);
       u8g2.drawStr(0, 30, pwndLine.c_str());
-      
+
       String deauthLine = "Deauth: " + String(e.deauth ? "Yes" : "No");
       u8g2.drawStr(0, 40, deauthLine.c_str());
-      
-      String uptimeLine = "Uptime: " + String(e.uptime / 60) + "m";
+
+      String uptimeLine = "Uptime: " + String(e.uptime / 60) + "min";
       u8g2.drawStr(0, 50, uptimeLine.c_str());
-      
-      u8g2.drawStr(0, 60, "L=Back SEL=Exit");
+
+      u8g2.drawStr(0, 60, "L=Back SEL=Exit R=Locate");
     } else {
       isDetailView = false;
     }

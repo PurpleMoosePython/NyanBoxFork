@@ -34,6 +34,9 @@ const int MAX_NETWORKS = 100;
 int currentIndex = 0;
 int listStartIndex = 0;
 bool isDetailView = false;
+bool isLocateMode = false;
+char locateTargetBSSID[18] = {0};
+uint8_t locateTargetChannel = 0;
 unsigned long lastButtonPress = 0;
 const unsigned long debounceTime = 200;
 
@@ -87,14 +90,22 @@ void processScanResults(unsigned long now) {
     esp_err_t err = esp_wifi_scan_get_ap_records(&actual_number, ap_info);
     
     if (err == ESP_OK) {
-        for (int i = 0; i < actual_number && wifiNetworks.size() < MAX_NETWORKS; i++) {
+        for (int i = 0; i < actual_number; i++) {
             if (ap_info[i].ssid[0] == '\0') {
                 continue;
             }
-            
+
             char bssidStr[18];
             bssid_to_string(ap_info[i].bssid, bssidStr, sizeof(bssidStr));
-            
+
+            if (isLocateMode && strlen(locateTargetBSSID) > 0) {
+                if (strcmp(bssidStr, locateTargetBSSID) != 0) {
+                    continue;
+                }
+            } else if (wifiNetworks.size() >= MAX_NETWORKS) {
+                continue;
+            }
+
             bool found = false;
             for (auto &net : wifiNetworks) {
                 if (strcmp(net.bssid, bssidStr) == 0) {
@@ -127,10 +138,12 @@ void processScanResults(unsigned long now) {
             }
         }
 
-        std::sort(wifiNetworks.begin(), wifiNetworks.end(),
-                [](const WiFiNetworkData &a, const WiFiNetworkData &b) {
-                    return a.rssi > b.rssi;
-                });
+        if (!isLocateMode) {
+            std::sort(wifiNetworks.begin(), wifiNetworks.end(),
+                    [](const WiFiNetworkData &a, const WiFiNetworkData &b) {
+                        return a.rssi > b.rssi;
+                    });
+        }
     }
     
     free(ap_info);
@@ -143,6 +156,9 @@ void wifiscanSetup() {
   wifiNetworks.reserve(MAX_NETWORKS);
   currentIndex = listStartIndex = 0;
   isDetailView = false;
+  isLocateMode = false;
+  memset(locateTargetBSSID, 0, sizeof(locateTargetBSSID));
+  locateTargetChannel = 0;
   lastButtonPress = 0;
   wifiscan_isScanning = false;
   wifiscan_scanCompleted = false;
@@ -198,55 +214,82 @@ void wifiscanLoop() {
   if (wifiscan_isScanning) {
     uint16_t currentApCount = 0;
     esp_wifi_scan_get_ap_num(&currentApCount);
-    
+
     if (currentApCount > wifiscan_lastApCount) {
       processScanResults(now);
       wifiscan_lastApCount = currentApCount;
     }
-    
-    if (now - wifiscan_lastDisplayUpdate > displayUpdateInterval) {
-      u8g2.clearBuffer();
-      u8g2.setFont(u8g2_font_6x10_tr);
-      u8g2.drawStr(0, 10, "Scanning for");
-      u8g2.drawStr(0, 20, "WiFi networks...");
-      
-      char countStr[32];
-      snprintf(countStr, sizeof(countStr), "%d/%d networks", (int)wifiNetworks.size(), MAX_NETWORKS);
-      u8g2.drawStr(0, 35, countStr);
-      
-      int barWidth = 120;
-      int barHeight = 10;
-      int barX = (128 - barWidth) / 2;
-      int barY = 42;
-      
-      u8g2.drawFrame(barX, barY, barWidth, barHeight);
-      
-      int fillWidth = (wifiNetworks.size() * (barWidth - 4)) / MAX_NETWORKS;
-      if (fillWidth > 0) {
-        u8g2.drawBox(barX + 2, barY + 2, fillWidth, barHeight - 4);
-      }
-      
-      u8g2.setFont(u8g2_font_5x8_tr);
-      u8g2.drawStr(0, 62, "Press SEL to exit");
-      u8g2.sendBuffer();
-      
+
+    if (isLocateMode && now - wifiscan_lastDisplayUpdate > displayUpdateInterval) {
+      processScanResults(now);
       wifiscan_lastDisplayUpdate = now;
     }
-    
+
     if (now - wifiscan_scanStartTime > scanDuration) {
       processScanResults(now);
-      
-      wifiscan_isScanning = false;
-      wifiscan_scanCompleted = true;
+
       wifiscan_lastScanTime = now;
       wifiscan_lastApCount = 0;
       esp_wifi_scan_stop();
+
+      if (isLocateMode) {
+        wifi_scan_config_t scan_config = {
+          .ssid = NULL,
+          .bssid = NULL,
+          .channel = locateTargetChannel,
+          .show_hidden = false,
+          .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+          .scan_time = {
+            .active = {
+              .min = 120,
+              .max = 200
+            }
+          }
+        };
+        esp_wifi_scan_start(&scan_config, false);
+        wifiscan_isScanning = true;
+        wifiscan_scanStartTime = now;
+      } else {
+        wifiscan_isScanning = false;
+        wifiscan_scanCompleted = true;
+      }
     }
-    
-    return;
+
+    if (!isLocateMode) {
+      if (now - wifiscan_lastDisplayUpdate > displayUpdateInterval) {
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_6x10_tr);
+        u8g2.drawStr(0, 10, "Scanning for");
+        u8g2.drawStr(0, 20, "WiFi networks...");
+
+        char countStr[32];
+        snprintf(countStr, sizeof(countStr), "%d/%d networks", (int)wifiNetworks.size(), MAX_NETWORKS);
+        u8g2.drawStr(0, 35, countStr);
+
+        int barWidth = 120;
+        int barHeight = 10;
+        int barX = (128 - barWidth) / 2;
+        int barY = 42;
+
+        u8g2.drawFrame(barX, barY, barWidth, barHeight);
+
+        int fillWidth = (wifiNetworks.size() * (barWidth - 4)) / MAX_NETWORKS;
+        if (fillWidth > 0) {
+          u8g2.drawBox(barX + 2, barY + 2, fillWidth, barHeight - 4);
+        }
+
+        u8g2.setFont(u8g2_font_5x8_tr);
+        u8g2.drawStr(0, 62, "Press SEL to exit");
+        u8g2.sendBuffer();
+
+        wifiscan_lastDisplayUpdate = now;
+      }
+      return;
+    }
   }
 
-  if (!wifiscan_isScanning && wifiscan_scanCompleted && now - wifiscan_lastScanTime > scanInterval) {
+  if (!wifiscan_isScanning && wifiscan_scanCompleted && now - wifiscan_lastScanTime > scanInterval &&
+      !isDetailView && !isLocateMode) {
     if (wifiNetworks.size() >= MAX_NETWORKS) {
       std::sort(wifiNetworks.begin(), wifiNetworks.end(),
               [](const WiFiNetworkData &a, const WiFiNetworkData &b) {
@@ -289,22 +332,56 @@ void wifiscanLoop() {
   }
 
   if (wifiscan_scanCompleted && now - lastButtonPress > debounceTime) {
-    if (!isDetailView && digitalRead(BTN_UP) == LOW && currentIndex > 0) {
+    if (!isDetailView && !isLocateMode && digitalRead(BTN_UP) == LOW && currentIndex > 0) {
       --currentIndex;
       if (currentIndex < listStartIndex)
         --listStartIndex;
       lastButtonPress = now;
-    } else if (!isDetailView && digitalRead(BTN_DOWN) == LOW &&
+    } else if (!isDetailView && !isLocateMode && digitalRead(BTN_DOWN) == LOW &&
                currentIndex < (int)wifiNetworks.size() - 1) {
       ++currentIndex;
       if (currentIndex >= listStartIndex + 5)
         ++listStartIndex;
       lastButtonPress = now;
-    } else if (!isDetailView && digitalRead(BTN_RIGHT) == LOW &&
+    } else if (!isDetailView && !isLocateMode && digitalRead(BTN_RIGHT) == LOW &&
                !wifiNetworks.empty()) {
       isDetailView = true;
       lastButtonPress = now;
-    } else if (digitalRead(BTN_BACK) == LOW) {
+    } else if (isDetailView && !isLocateMode && digitalRead(BTN_RIGHT) == LOW &&
+               !wifiNetworks.empty()) {
+      isLocateMode = true;
+      strncpy(locateTargetBSSID, wifiNetworks[currentIndex].bssid, sizeof(locateTargetBSSID) - 1);
+      locateTargetBSSID[sizeof(locateTargetBSSID) - 1] = '\0';
+      locateTargetChannel = wifiNetworks[currentIndex].channel;
+      if (!wifiscan_isScanning) {
+        wifi_scan_config_t scan_config = {
+          .ssid = NULL,
+          .bssid = NULL,
+          .channel = locateTargetChannel,
+          .show_hidden = false,
+          .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+          .scan_time = {
+            .active = {
+              .min = 120,
+              .max = 200
+            }
+          }
+        };
+        esp_wifi_scan_start(&scan_config, false);
+        wifiscan_isScanning = true;
+        wifiscan_scanStartTime = now;
+      }
+      lastButtonPress = now;
+    } else if (isLocateMode && digitalRead(BTN_BACK) == LOW) {
+      isLocateMode = false;
+      memset(locateTargetBSSID, 0, sizeof(locateTargetBSSID));
+      locateTargetChannel = 0;
+      if (wifiscan_isScanning) {
+        esp_wifi_scan_stop();
+        wifiscan_isScanning = false;
+      }
+      lastButtonPress = now;
+    } else if (isDetailView && !isLocateMode && digitalRead(BTN_BACK) == LOW) {
       isDetailView = false;
       lastButtonPress = now;
     }
@@ -313,6 +390,9 @@ void wifiscanLoop() {
   if (wifiNetworks.empty()) {
     currentIndex = listStartIndex = 0;
     isDetailView = false;
+    isLocateMode = false;
+    memset(locateTargetBSSID, 0, sizeof(locateTargetBSSID));
+    locateTargetChannel = 0;
   } else {
     currentIndex = constrain(currentIndex, 0, (int)wifiNetworks.size() - 1);
     listStartIndex =
@@ -320,7 +400,7 @@ void wifiscanLoop() {
   }
 
   u8g2.clearBuffer();
-  
+
   if (wifiNetworks.empty()) {
     u8g2.setFont(u8g2_font_6x10_tr);
     u8g2.drawStr(0, 10, "No networks found");
@@ -330,27 +410,76 @@ void wifiscanLoop() {
     snprintf(timeStr, sizeof(timeStr), "Scanning in %lus", timeLeft);
     u8g2.drawStr(0, 30, timeStr);
     u8g2.drawStr(0, 45, "Press SEL to exit");
+  } else if (isLocateMode) {
+    auto &net = wifiNetworks[currentIndex];
+    u8g2.setFont(u8g2_font_5x8_tr);
+    char buf[32];
+
+    snprintf(buf, sizeof(buf), "%.13s Ch:%d", net.ssid, locateTargetChannel);
+    u8g2.drawStr(0, 8, buf);
+
+    snprintf(buf, sizeof(buf), "%s", net.bssid);
+    u8g2.drawStr(0, 16, buf);
+
+    u8g2.setFont(u8g2_font_7x13B_tr);
+    snprintf(buf, sizeof(buf), "RSSI: %d dBm", net.rssi);
+    u8g2.drawStr(0, 28, buf);
+
+    u8g2.setFont(u8g2_font_5x8_tr);
+    int rssiClamped = constrain(net.rssi, -100, -40);
+    int signalLevel = map(rssiClamped, -100, -40, 0, 5);
+
+    const char* quality;
+    if (signalLevel >= 5) quality = "EXCELLENT";
+    else if (signalLevel >= 4) quality = "VERY GOOD";
+    else if (signalLevel >= 3) quality = "GOOD";
+    else if (signalLevel >= 2) quality = "FAIR";
+    else if (signalLevel >= 1) quality = "WEAK";
+    else quality = "VERY WEAK";
+
+    snprintf(buf, sizeof(buf), "Signal: %s", quality);
+    u8g2.drawStr(0, 38, buf);
+
+    int barWidth = 12;
+    int barSpacing = 5;
+    int totalWidth = (barWidth * 5) + (barSpacing * 4);
+    int startX = (128 - totalWidth) / 2;
+    int baseY = 54;
+
+    for (int i = 0; i < 5; i++) {
+      int barHeight = 8 + (i * 2);
+      int x = startX + (i * (barWidth + barSpacing));
+      int y = baseY - barHeight;
+
+      if (i < signalLevel) {
+        u8g2.drawBox(x, y, barWidth, barHeight);
+      } else {
+        u8g2.drawFrame(x, y, barWidth, barHeight);
+      }
+    }
+
+    u8g2.drawStr(0, 62, "L=Back SEL=Exit");
   } else if (isDetailView) {
     auto &net = wifiNetworks[currentIndex];
     u8g2.setFont(u8g2_font_5x8_tr);
     char buf[40];
-    
+
     snprintf(buf, sizeof(buf), "SSID: %s", net.ssid);
     u8g2.drawStr(0, 10, buf);
-    
+
     snprintf(buf, sizeof(buf), "BSSID: %s", net.bssid);
     u8g2.drawStr(0, 20, buf);
-    
+
     snprintf(buf, sizeof(buf), "RSSI: %d dBm", net.rssi);
     u8g2.drawStr(0, 30, buf);
-    
+
     snprintf(buf, sizeof(buf), "Ch: %d  Auth: %s", net.channel, net.authMode);
     u8g2.drawStr(0, 40, buf);
-    
+
     snprintf(buf, sizeof(buf), "Age: %lus", (now - net.lastSeen) / 1000);
     u8g2.drawStr(0, 50, buf);
-    
-    u8g2.drawStr(0, 62, "L=Back SEL=Exit");
+
+    u8g2.drawStr(0, 62, "L=Back SEL=Exit R=Locate");
   } else {
     u8g2.setFont(u8g2_font_6x10_tr);
     char header[32];
