@@ -5,6 +5,7 @@
 
 #include "../include/spoofer.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "../include/pindefs.h"
 #include <Arduino.h>
 #include "esp_bt.h"
@@ -23,6 +24,10 @@ bool bleInitialized = false;
 unsigned long lastDebounce = 0;
 const unsigned long debounceDelay = 500;
 const unsigned long packetDelay = 1000;
+
+static bool needsRedraw = true;
+static unsigned long lastActiveUpdate = 0;
+const unsigned long activeUpdateInterval = 1000;
 
 int deviceType = 0;
 int deviceIndex = 0;
@@ -175,20 +180,21 @@ void updateDisplay() {
   u8g2.setCursor(80, 45);
   u8g2.print(isAdvertising ? "Active" : "Disabled");
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 void changeDeviceNext() {
   deviceType++;
   if (deviceType > DEVICE_COUNT)
     deviceType = 0;
-  updateDisplay();
+  needsRedraw = true;
 }
 
 void changeDevicePrev() {
   deviceType--;
   if (deviceType < 0)
     deviceType = DEVICE_COUNT;
-  updateDisplay();
+  needsRedraw = true;
 }
 
 void toggleAdvertising() {
@@ -200,7 +206,7 @@ void toggleAdvertising() {
   if (!isAdvertising) {
     esp_ble_gap_stop_advertising();
   }
-  updateDisplay();
+  needsRedraw = true;
 }
 
 void spooferSetup() {
@@ -223,11 +229,15 @@ void spooferSetup() {
   }
 
   bleInitialized = true;
+  needsRedraw = true;
+  lastActiveUpdate = 0;
 
   updateDisplay();
 }
 
 void spooferLoop() {
+  unsigned long now = millis();
+
   if (digitalRead(DEVICE_NEXT_BTN) == LOW) {
     delay(50);
     changeDeviceNext();
@@ -239,6 +249,16 @@ void spooferLoop() {
   if (digitalRead(ADV_CONTROL_BTN) == LOW) {
     delay(50);
     toggleAdvertising();
+  }
+
+  if (isAdvertising && now - lastActiveUpdate >= activeUpdateInterval) {
+    lastActiveUpdate = now;
+    needsRedraw = true;
+  }
+
+  if (needsRedraw) {
+    updateDisplay();
+    needsRedraw = false;
   }
 
   if (isAdvertising) {
@@ -258,7 +278,7 @@ void spooferLoop() {
     esp_ble_gap_set_rand_addr(randAddr);
 
     esp_ble_gap_config_adv_data_raw((uint8_t*)DEVICES[deviceIndex], 31);
-    
+
     delay(10);
     esp_ble_gap_start_advertising(&adv_params);
     delay(packetDelay);

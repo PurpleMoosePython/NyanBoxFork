@@ -6,6 +6,7 @@
 
 #include "../include/pwnagotchi_spam.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include <ArduinoJson.h>
@@ -76,6 +77,13 @@ const int numNames = sizeof(names) / sizeof(names[0]);
 
 const char randomChars[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!@#$%^&*()_+-=[]{}|;:,.<>?";
 const int numRandomChars = sizeof(randomChars) - 1;
+
+static bool needsRedraw = true;
+static bool lastSpamActive = false;
+static SpamMode lastMode = NORMAL_MODE;
+static unsigned long lastBeaconsSent = 0;
+static unsigned long lastPeriodicUpdate = 0;
+const unsigned long periodicUpdateInterval = 1000;
 
 // DoS faces (freeze screen)
 const char* dosFace = "■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■";
@@ -204,65 +212,96 @@ void pwnagotchiSpamSetup() {
     currentNameIndex = 0;
     currentChannel = 0;
     currentMode = NORMAL_MODE;
+
+    needsRedraw = true;
+    lastSpamActive = false;
+    lastMode = NORMAL_MODE;
+    lastBeaconsSent = 0;
+    lastPeriodicUpdate = 0;
 }
 
 void pwnagotchiSpamLoop() {
     unsigned long now = millis();
-    
+
     if (digitalRead(BUTTON_PIN_UP) == LOW) {
         spamActive = !spamActive;
+        needsRedraw = true;
         delay(200);
     }
-    
+
     if (digitalRead(BUTTON_PIN_DOWN) == LOW) {
         currentMode = static_cast<SpamMode>((currentMode + 1) % 3);
+        needsRedraw = true;
         delay(200);
     }
 
     unsigned long spamDelay = 200;
-    
+
     if (spamActive && (now - lastBeacon >= spamDelay)) {
         switch (currentMode) {
             case NORMAL_MODE:
-                sendPwnagotchiBeacon(channels[currentChannel], 
-                                   faces[currentFaceIndex], 
+                sendPwnagotchiBeacon(channels[currentChannel],
+                                   faces[currentFaceIndex],
                                    names[currentNameIndex]);
                 currentFaceIndex = (currentFaceIndex + 1) % numFaces;
                 currentNameIndex = (currentNameIndex + 1) % numNames;
                 break;
-                
+
             case RANDOM_MODE:
                 {
                     String randomName = generateRandomName();
-                    sendPwnagotchiBeacon(channels[currentChannel], 
-                                       faces[random(numFaces)], 
+                    sendPwnagotchiBeacon(channels[currentChannel],
+                                       faces[random(numFaces)],
                                        randomName.c_str());
                 }
                 break;
-                
+
             case DOS_MODE:
                 sendPwnagotchiBeacon(channels[currentChannel], dosFace, dosName);
                 break;
         }
-        
+
         currentChannel = (currentChannel + 1) % numChannels;
         lastBeacon = now;
-        
     }
 
+    if (lastSpamActive != spamActive) {
+        lastSpamActive = spamActive;
+        needsRedraw = true;
+    }
+    if (lastMode != currentMode) {
+        lastMode = currentMode;
+        needsRedraw = true;
+    }
+    if (lastBeaconsSent != beaconsSent) {
+        lastBeaconsSent = beaconsSent;
+        needsRedraw = true;
+    }
+
+    if (spamActive && now - lastPeriodicUpdate >= periodicUpdateInterval) {
+        lastPeriodicUpdate = now;
+        needsRedraw = true;
+    }
+
+    if (!needsRedraw) {
+        delay(50);
+        return;
+    }
+
+    needsRedraw = false;
     u8g2.clearBuffer();
-    
+
     u8g2.setFont(u8g2_font_helvB10_tr);
     const char* title = "Pwnagotchi Spam";
     int titleWidth = u8g2.getUTF8Width(title);
     u8g2.drawStr((128 - titleWidth) / 2, 12, title);
     u8g2.drawHLine(10, 15, 108);
-    
+
     u8g2.setFont(u8g2_font_helvB08_tr);
     const char* status = spamActive ? "ACTIVE" : "STOPPED";
     int statusWidth = u8g2.getUTF8Width(status);
     u8g2.drawStr((128 - statusWidth) / 2, 26, status);
-    
+
     u8g2.setFont(u8g2_font_helvR08_tr);
     const char* mode;
     switch (currentMode) {
@@ -272,23 +311,24 @@ void pwnagotchiSpamLoop() {
     }
     int modeWidth = u8g2.getUTF8Width(mode);
     u8g2.drawStr((128 - modeWidth) / 2, 36, mode);
-    
+
     char statsText[32];
     snprintf(statsText, sizeof(statsText), "Sent: %lu", beaconsSent);
     int statsWidth = u8g2.getUTF8Width(statsText);
     u8g2.drawStr((128 - statsWidth) / 2, 46, statsText);
-    
+
     u8g2.setFont(u8g2_font_4x6_tr);
     const char* line1 = "UP=Start/Stop  DOWN=Mode";
     const char* line2 = "SEL=Exit";
-    
+
     int line1Width = u8g2.getUTF8Width(line1);
     int line2Width = u8g2.getUTF8Width(line2);
-    
+
     u8g2.drawStr((128 - line1Width) / 2, 56, line1);
     u8g2.drawStr((128 - line2Width) / 2, 64, line2);
-    
+
     u8g2.sendBuffer();
-    
+    displayMirrorSend(u8g2);
+
     delay(50);
 }

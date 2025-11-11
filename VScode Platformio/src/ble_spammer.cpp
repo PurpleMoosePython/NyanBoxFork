@@ -6,6 +6,7 @@
 #include "../include/pindefs.h"
 #include "ble_spammer.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include <U8g2lib.h>
 #include <Arduino.h>
 #include "esp_bt.h"
@@ -20,9 +21,13 @@ enum BleSpamMode { BLE_SPAM_MENU, BLE_SPAM_RANDOM, BLE_SPAM_EMOJI, BLE_SPAM_CUST
 static BleSpamMode bleSpamMode = BLE_SPAM_MENU;
 static int menuSelection = 0;
 static unsigned long lastButtonPress = 0;
-const unsigned long debounceDelay = 200;
+const unsigned long debounceDelay = 150;
 static bool bleInitialized = false;
 static bool isCurrentlyAdvertising = false;
+
+static bool needsRedraw = true;
+static unsigned long lastActiveUpdate = 0;
+const unsigned long activeUpdateInterval = 1000;
 
 // BLE advertising parameters (non-connectable)
 static esp_ble_adv_params_t adv_params = {
@@ -169,6 +174,7 @@ static void drawBleSpamMenu() {
     u8g2.setFont(u8g2_font_5x8_tr);
     u8g2.drawStr(0, 62, "U/D=Move R=Start SEL=Exit");
     u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 static void drawActiveSpam(const char* modeName, const char* extraInfo = nullptr) {
@@ -184,6 +190,7 @@ static void drawActiveSpam(const char* modeName, const char* extraInfo = nullptr
     u8g2.setFont(u8g2_font_5x8_tr);
     u8g2.drawStr(0, 62, "L=Back SEL=Exit");
     u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
     
 // Packet structure for each advertisement
@@ -278,6 +285,8 @@ void bleSpamSetup() {
 
     bleSpamMode = BLE_SPAM_MENU;
     menuSelection = 0;
+    needsRedraw = true;
+    lastActiveUpdate = 0;
     drawBleSpamMenu();
 }
     
@@ -294,29 +303,26 @@ void bleSpamLoop() {
     bool right = digitalRead(BUTTON_PIN_RIGHT) == LOW;
 
     if (bleSpamMode != previousMode) {
-        if (bleSpamMode == BLE_SPAM_RANDOM) {
-            drawActiveSpam("Random Spam");
-        } else if (bleSpamMode == BLE_SPAM_EMOJI) {
-            drawActiveSpam("Emoji Spam");
-        } else if (bleSpamMode == BLE_SPAM_CUSTOM) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "Index Count: %d", customNamesCount);
-            drawActiveSpam("Custom Spam", buf);
-        } else if (bleSpamMode == BLE_SPAM_ALL) {
-            drawActiveSpam("All Spam");
-        }
+        needsRedraw = true;
         previousMode = bleSpamMode;
+        lastActiveUpdate = now;
+    }
+
+    if (bleSpamMode != BLE_SPAM_MENU && now - lastActiveUpdate >= activeUpdateInterval) {
+        lastActiveUpdate = now;
+        needsRedraw = true;
     }
 
     switch (bleSpamMode) {
         case BLE_SPAM_MENU:
-            drawBleSpamMenu();
             if (now - lastButtonPress > debounceDelay) {
                 if (up) {
                     menuSelection = (menuSelection - 1 + 4) % 4;
+                    needsRedraw = true;
                     lastButtonPress = now;
                 } else if (down) {
                     menuSelection = (menuSelection + 1) % 4;
+                    needsRedraw = true;
                     lastButtonPress = now;
                 } else if (right) {
                     if (menuSelection == 0) {
@@ -329,12 +335,23 @@ void bleSpamLoop() {
                         bleSpamMode = BLE_SPAM_ALL;
                     }
                     nextIdx = 0;
+                    needsRedraw = true;
                     lastButtonPress = now;
                 }
+            }
+
+            if (needsRedraw) {
+                drawBleSpamMenu();
+                needsRedraw = false;
             }
             break;
 
         case BLE_SPAM_RANDOM:
+            if (needsRedraw) {
+                drawActiveSpam("Random Spam");
+                needsRedraw = false;
+            }
+
             for (uint8_t i = 0; i < batchSize; i++) {
                 const char* name = pickName(nameBuf, 1);
                 advertiseDevice(name);
@@ -347,11 +364,17 @@ void bleSpamLoop() {
                     delay(50);
                 }
                 bleSpamMode = BLE_SPAM_MENU;
+                needsRedraw = true;
                 lastButtonPress = now;
             }
             break;
 
         case BLE_SPAM_EMOJI:
+            if (needsRedraw) {
+                drawActiveSpam("Emoji Spam");
+                needsRedraw = false;
+            }
+
             for (uint8_t i = 0; i < batchSize; i++) {
                 const char* name = pickName(nameBuf, 2);
                 advertiseDevice(name);
@@ -364,11 +387,19 @@ void bleSpamLoop() {
                     delay(50);
                 }
                 bleSpamMode = BLE_SPAM_MENU;
+                needsRedraw = true;
                 lastButtonPress = now;
             }
             break;
 
         case BLE_SPAM_CUSTOM:
+            if (needsRedraw) {
+                char buf[32];
+                snprintf(buf, sizeof(buf), "Index Count: %d", customNamesCount);
+                drawActiveSpam("Custom Spam", buf);
+                needsRedraw = false;
+            }
+
             if (customNamesCount > 0) {
                 for (uint8_t i = 0; i < batchSize; i++) {
                     const char* name = customNames[nextIdx];
@@ -385,11 +416,17 @@ void bleSpamLoop() {
                 }
                 bleSpamMode = BLE_SPAM_MENU;
                 nextIdx = 0;
+                needsRedraw = true;
                 lastButtonPress = now;
             }
             break;
 
         case BLE_SPAM_ALL:
+            if (needsRedraw) {
+                drawActiveSpam("All Spam");
+                needsRedraw = false;
+            }
+
             for (uint8_t i = 0; i < batchSize; i++) {
                 uint8_t useMode = i % 3;
                 const char* name;
@@ -410,6 +447,7 @@ void bleSpamLoop() {
                 }
                 bleSpamMode = BLE_SPAM_MENU;
                 nextIdx = 0;
+                needsRedraw = true;
                 lastButtonPress = now;
             }
             break;

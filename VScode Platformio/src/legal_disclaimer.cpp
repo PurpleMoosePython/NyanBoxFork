@@ -1,3 +1,4 @@
+
 /* ____________________________
    This software is licensed under the MIT License:
    https://github.com/jbohack/nyanBOX
@@ -7,6 +8,7 @@
 #include <U8g2lib.h>
 #include "../include/legal_disclaimer.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "../include/pindefs.h"
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
@@ -20,6 +22,10 @@ bool showLegalDisclaimer() {
   bool buttonRightPressed = false;
   bool hasSeenAllPages = false;
 
+  bool needsRedraw = true;
+  int lastPage = -1;
+  bool lastHasSeenAllPages = false;
+
   while (true) {
     checkIdle();
 
@@ -28,6 +34,76 @@ bool showLegalDisclaimer() {
     bool right = !digitalRead(BUTTON_PIN_RIGHT);
     bool left = !digitalRead(BUTTON_PIN_LEFT);
 
+    if (up) {
+      if (!buttonUpPressed) {
+        buttonUpPressed = true;
+        if (page > 0) {
+          page--;
+          needsRedraw = true;
+        }
+      }
+    } else {
+      buttonUpPressed = false;
+    }
+
+    if (down) {
+      if (!buttonDownPressed) {
+        buttonDownPressed = true;
+        if (page < 3) {
+          page++;
+          if (page == 3) {
+            hasSeenAllPages = true;
+          }
+          needsRedraw = true;
+        }
+      }
+    } else {
+      buttonDownPressed = false;
+    }
+
+    if (left) {
+      if (!buttonLeftPressed) {
+        buttonLeftPressed = true;
+        while (!digitalRead(BUTTON_PIN_LEFT)) {
+          delay(10);
+        }
+        delay(100);
+        return false;
+      }
+    } else {
+      buttonLeftPressed = false;
+    }
+
+    if (right) {
+      if (!buttonRightPressed) {
+        buttonRightPressed = true;
+        if (page == 3 && hasSeenAllPages) {
+          while (!digitalRead(BUTTON_PIN_RIGHT)) {
+            delay(10);
+          }
+          delay(100);
+          return true;
+        }
+      }
+    } else {
+      buttonRightPressed = false;
+    }
+
+    if (lastPage != page) {
+      lastPage = page;
+      needsRedraw = true;
+    }
+    if (lastHasSeenAllPages != hasSeenAllPages) {
+      lastHasSeenAllPages = hasSeenAllPages;
+      needsRedraw = true;
+    }
+
+    if (!needsRedraw) {
+      delay(50);
+      continue;
+    }
+
+    needsRedraw = false;
     u8g2.clearBuffer();
 
     if (page == 0) {
@@ -105,57 +181,7 @@ bool showLegalDisclaimer() {
     }
 
     u8g2.sendBuffer();
-
-    if (up) {
-      if (!buttonUpPressed) {
-        buttonUpPressed = true;
-        if (page > 0) page--;
-      }
-    } else {
-      buttonUpPressed = false;
-    }
-
-    if (down) {
-      if (!buttonDownPressed) {
-        buttonDownPressed = true;
-        if (page < 3) {
-          page++;
-          if (page == 3) {
-            hasSeenAllPages = true;
-          }
-        }
-      }
-    } else {
-      buttonDownPressed = false;
-    }
-
-    if (left) {
-      if (!buttonLeftPressed) {
-        buttonLeftPressed = true;
-        while (!digitalRead(BUTTON_PIN_LEFT)) {
-          delay(10);
-        }
-        delay(100);
-        return false;
-      }
-    } else {
-      buttonLeftPressed = false;
-    }
-
-    if (right) {
-      if (!buttonRightPressed) {
-        buttonRightPressed = true;
-        if (page == 3 && hasSeenAllPages) {
-          while (!digitalRead(BUTTON_PIN_RIGHT)) {
-            delay(10);
-          }
-          delay(100);
-          return true;
-        }
-      }
-    } else {
-      buttonRightPressed = false;
-    }
+    displayMirrorSend(u8g2);
 
     delay(50);
   }

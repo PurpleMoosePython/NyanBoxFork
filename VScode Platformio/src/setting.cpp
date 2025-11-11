@@ -9,6 +9,7 @@
 
 #include "../include/setting.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "../include/level_system.h"
 #include "../include/legal_disclaimer.h"
 #include "../include/pindefs.h"
@@ -27,6 +28,14 @@ uint8_t oledBrightness = 100;
 extern bool dangerousActionsEnabled;
 bool showResetConfirm = false;
 uint8_t sleepTimeoutIndex = 3;
+
+static bool needsRedraw = true;
+static int lastCurrentSetting = -1;
+static bool lastNeoPixelActive = true;
+static uint8_t lastOledBrightness = 100;
+static bool lastDangerousActionsEnabled = false;
+static bool lastShowResetConfirm = false;
+static uint8_t lastSleepTimeoutIndex = 3;
 
 const unsigned long sleepTimeouts[] = {15, 30, 60, 120, 300, 900, 1800, 0};
 const char* sleepTimeoutNames[] = {"15s", "30s", "1m", "2m", "5m", "15m", "30m", "Off"};
@@ -83,6 +92,14 @@ void settingSetup() {
 
   currentSetting = 0;
   showResetConfirm = false;
+
+  needsRedraw = true;
+  lastCurrentSetting = -1;
+  lastNeoPixelActive = neoPixelActive;
+  lastOledBrightness = oledBrightness;
+  lastDangerousActionsEnabled = dangerousActionsEnabled;
+  lastShowResetConfirm = false;
+  lastSleepTimeoutIndex = sleepTimeoutIndex;
 }
 
 void settingLoop() {
@@ -90,20 +107,27 @@ void settingLoop() {
   static bool downPressed = false;
   static bool rightPressed = false;
   static bool leftPressed = false;
+  static unsigned long lastUpPress = 0;
+  static unsigned long lastDownPress = 0;
+  static unsigned long lastRightPress = 0;
+  static unsigned long lastLeftPress = 0;
+  const unsigned long debounceDelay = 150;
 
   checkIdle();
 
+  unsigned long now = millis();
   bool up = !digitalRead(BUTTON_PIN_UP);
   bool down = !digitalRead(BUTTON_PIN_DOWN);
   bool right = !digitalRead(BUTTON_PIN_RIGHT);
   bool left = !digitalRead(BUTTON_PIN_LEFT);
 
-
   if (up) {
-    if (!upPressed) {
+    if (!upPressed && (now - lastUpPress > debounceDelay)) {
       upPressed = true;
+      lastUpPress = now;
       if (!showResetConfirm) {
         currentSetting = (currentSetting - 1 + totalSettings) % totalSettings;
+        needsRedraw = true;
       }
     }
   } else {
@@ -111,10 +135,12 @@ void settingLoop() {
   }
 
   if (down) {
-    if (!downPressed) {
+    if (!downPressed && (now - lastDownPress > debounceDelay)) {
       downPressed = true;
+      lastDownPress = now;
       if (!showResetConfirm) {
         currentSetting = (currentSetting + 1) % totalSettings;
+        needsRedraw = true;
       }
     }
   } else {
@@ -122,18 +148,21 @@ void settingLoop() {
   }
 
   if (right) {
-    if (!rightPressed) {
+    if (!rightPressed && (now - lastRightPress > debounceDelay)) {
       rightPressed = true;
+      lastRightPress = now;
 
       if (showResetConfirm) {
         resetXPData();
         showResetConfirm = false;
+        needsRedraw = true;
       } else {
         switch (currentSetting) {
           case 0:
             neoPixelActive = !neoPixelActive;
             EEPROM.write(EEPROM_ADDRESS_NEOPIXEL, neoPixelActive ? 1 : 0);
             EEPROM.commit();
+            needsRedraw = true;
             break;
 
           case 1:
@@ -145,11 +174,13 @@ void settingLoop() {
               u8g2.setContrast(oledBrightness);
               EEPROM.write(EEPROM_ADDRESS_BRIGHTNESS, oledBrightness);
               EEPROM.commit();
+              needsRedraw = true;
             }
             break;
 
           case 2:
             handleDangerousActions();
+            needsRedraw = true;
             break;
 
           case 3:
@@ -157,10 +188,12 @@ void settingLoop() {
             EEPROM.write(EEPROM_ADDRESS_SLEEP_TIMEOUT, sleepTimeoutIndex);
             EEPROM.commit();
             updateSleepTimeout(sleepTimeouts[sleepTimeoutIndex] * 1000);
+            needsRedraw = true;
             break;
 
           case 4:
             showResetConfirm = true;
+            needsRedraw = true;
             break;
         }
       }
@@ -170,16 +203,48 @@ void settingLoop() {
   }
 
   if (left) {
-    if (!leftPressed) {
+    if (!leftPressed && (now - lastLeftPress > debounceDelay)) {
       leftPressed = true;
+      lastLeftPress = now;
       if (showResetConfirm) {
         showResetConfirm = false;
+        needsRedraw = true;
       }
     }
   } else {
     leftPressed = false;
   }
 
+  if (lastCurrentSetting != currentSetting) {
+    lastCurrentSetting = currentSetting;
+    needsRedraw = true;
+  }
+  if (lastNeoPixelActive != neoPixelActive) {
+    lastNeoPixelActive = neoPixelActive;
+    needsRedraw = true;
+  }
+  if (lastOledBrightness != oledBrightness) {
+    lastOledBrightness = oledBrightness;
+    needsRedraw = true;
+  }
+  if (lastDangerousActionsEnabled != dangerousActionsEnabled) {
+    lastDangerousActionsEnabled = dangerousActionsEnabled;
+    needsRedraw = true;
+  }
+  if (lastShowResetConfirm != showResetConfirm) {
+    lastShowResetConfirm = showResetConfirm;
+    needsRedraw = true;
+  }
+  if (lastSleepTimeoutIndex != sleepTimeoutIndex) {
+    lastSleepTimeoutIndex = sleepTimeoutIndex;
+    needsRedraw = true;
+  }
+
+  if (!needsRedraw) {
+    return;
+  }
+
+  needsRedraw = false;
   u8g2.clearBuffer();
 
   if (showResetConfirm) {
@@ -239,9 +304,9 @@ void settingLoop() {
   }
 
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 bool isDangerousActionsEnabled() {
   return dangerousActionsEnabled;
 }
-

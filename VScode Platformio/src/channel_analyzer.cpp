@@ -6,6 +6,7 @@
 
 #include "../include/channel_analyzer.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 
@@ -40,6 +41,10 @@ static int currentView = 0;
 static bool scanInProgress = false;
 static uint16_t lastApCount = 0;
 static int scannedNetworks = 0;
+
+static bool needsRedraw = true;
+static int lastView = -1;
+static int lastScannedNetworks = 0;
 
 const char* getSignalStrengthLabel(int rssi) {
     if (rssi > -50) return "Strong";
@@ -267,7 +272,10 @@ void channelAnalyzerSetup() {
     lastButtonPress = 0;
     scanInProgress = false;
     initChannelData();
-    
+    needsRedraw = true;
+    lastView = -1;
+    lastScannedNetworks = 0;
+
     u8g2.begin();
     u8g2.setFont(u8g2_font_helvR08_tr);
     u8g2.clearBuffer();
@@ -275,7 +283,8 @@ void channelAnalyzerSetup() {
     int scanWidth = u8g2.getUTF8Width(scanText);
     u8g2.drawStr((128 - scanWidth) / 2, 32, scanText);
     u8g2.sendBuffer();
-    
+  displayMirrorSend(u8g2);
+
     performChannelScan();
     lastScanTime = millis();
 }
@@ -288,7 +297,16 @@ void channelAnalyzerLoop() {
         esp_wifi_scan_get_ap_num(&currentApCount);
         scannedNetworks = currentApCount;
 
+        if (scannedNetworks != lastScannedNetworks) {
+            lastScannedNetworks = scannedNetworks;
+            needsRedraw = true;
+        }
+
         if (now - lastDisplayUpdate > displayUpdateInterval) {
+            needsRedraw = true;
+        }
+
+        if (needsRedraw) {
             u8g2.clearBuffer();
             u8g2.setFont(u8g2_font_helvR08_tr);
             const char* scanText = "Scanning Networks...";
@@ -318,48 +336,65 @@ void channelAnalyzerLoop() {
             int cancelWidth = u8g2.getUTF8Width(cancelText);
             u8g2.drawStr((128 - cancelWidth) / 2, 60, cancelText);
             u8g2.sendBuffer();
+            displayMirrorSend(u8g2);
 
             lastDisplayUpdate = now;
+            needsRedraw = false;
         }
-        
+
         if (now - scanStartTime > scanDuration) {
             processChannelScanResults(now);
             scanInProgress = false;
             lastScanTime = now;
             lastApCount = 0;
             esp_wifi_scan_stop();
+            needsRedraw = true;
         }
-        
+
         return;
     }
-    
+
     if (now - lastScanTime >= SCAN_INTERVAL) {
         performChannelScan();
+        needsRedraw = true;
         return;
     }
-    
+
     if (now - lastButtonPress > debounceTime) {
         if (digitalRead(BTN_UP) == LOW) {
             currentView = (currentView - 1 + 3) % 3;
             lastButtonPress = now;
+            needsRedraw = true;
         } else if (digitalRead(BTN_DOWN) == LOW) {
             currentView = (currentView + 1) % 3;
             lastButtonPress = now;
+            needsRedraw = true;
         } else if (digitalRead(BTN_RIGHT) == LOW) {
             performChannelScan();
             lastButtonPress = now;
+            needsRedraw = true;
+            return;
         }
     }
-    
-    u8g2.clearBuffer();
-    
-    if (currentView == 0) {
-        drawNetworkCountView();
-    } else if (currentView == 1) {
-        drawSignalStrengthView();
-    } else {
-        drawSummaryView();
+
+    if (currentView != lastView) {
+        lastView = currentView;
+        needsRedraw = true;
     }
-    
-    u8g2.sendBuffer();
+
+    if (needsRedraw) {
+        u8g2.clearBuffer();
+
+        if (currentView == 0) {
+            drawNetworkCountView();
+        } else if (currentView == 1) {
+            drawSignalStrengthView();
+        } else {
+            drawSummaryView();
+        }
+
+        u8g2.sendBuffer();
+        displayMirrorSend(u8g2);
+        needsRedraw = false;
+    }
 }

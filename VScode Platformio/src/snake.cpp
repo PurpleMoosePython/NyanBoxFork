@@ -8,6 +8,7 @@
 #include <EEPROM.h>
 #include "snake.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include <esp_system.h>
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
@@ -25,6 +26,9 @@ static const unsigned long INTERVAL = 200;
 static uint16_t score = 0;
 static uint16_t highScore = 0;
 static uint16_t savedHighScore = 0;
+
+static bool needsRedraw = true;
+static uint8_t lastDir = 0;
 
 void loadHighScore() {
   uint8_t scoreLow = EEPROM.read(EEPROM_ADDRESS_HIGHSCORE_LOW);
@@ -59,12 +63,15 @@ void resetSnake(){
   appleX = random(SNAKE_COLS);
   appleY = random(SNAKE_ROWS);
   lastMove = millis();
+  needsRedraw = true;
 }
 
 void snakeSetup(){
   randomSeed((uint32_t)esp_random());
   loadHighScore();
   resetSnake();
+  needsRedraw = true;
+  lastDir = dir;
 }
 
 void snakeLoop(){
@@ -81,8 +88,14 @@ void snakeLoop(){
     dir=3;
   }
 
+  if(lastDir != dir) {
+    lastDir = dir;
+    needsRedraw = true;
+  }
+
   if(millis() - lastMove >= INTERVAL){
     lastMove = millis();
+    needsRedraw = true;
     for(int i=snakeLen; i>0; i--){
       snakeX[i] = snakeX[i-1];
       snakeY[i] = snakeY[i-1];
@@ -113,6 +126,11 @@ void snakeLoop(){
     }
   }
 
+  if(!needsRedraw) {
+    return;
+  }
+
+  needsRedraw = false;
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x10_tr);
   u8g2.setCursor(0,10); u8g2.print("Score:"); u8g2.print(score);
@@ -122,6 +140,7 @@ void snakeLoop(){
     u8g2.drawFrame(snakeX[i]*SNAKE_CELL, snakeY[i]*SNAKE_CELL, SNAKE_CELL, SNAKE_CELL);
   }
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 void snakeCleanup() {

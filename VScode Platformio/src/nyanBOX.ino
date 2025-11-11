@@ -49,6 +49,7 @@
 #include "../include/legal_disclaimer.h"
 #include "../include/cardskimmer_detector.h"
 #include "../include/axon_detector.h"
+#include "../include/display_mirror.h"
 
 RF24 radios[] = {
   RF24(RADIO_CE_PIN_1, RADIO_CSN_PIN_1),
@@ -75,6 +76,29 @@ unsigned long idleTimeout = 120000;
 static unsigned long lastActivity = 0;
 static bool displayOff = false;
 const unsigned long MAX_XP_IDLE_TIME = 120000;
+
+unsigned long upLastMillis    = 0;
+unsigned long upNextRepeat    = 0;
+bool         upPressed        = false;
+unsigned long upDebounceTime  = 0;
+
+unsigned long downLastMillis  = 0;
+unsigned long downNextRepeat  = 0;
+bool         downPressed      = false;
+unsigned long downDebounceTime = 0;
+
+bool selPrev = false;
+bool rightPrev = false;
+bool leftPrev = false;
+unsigned long selDebounceTime = 0;
+unsigned long rightDebounceTime = 0;
+unsigned long leftDebounceTime = 0;
+
+const unsigned long initialDelay   = 500;
+const unsigned long repeatInterval = 250;
+const unsigned long debounceDelay  = 150;
+
+static bool needsRedraw = true;
 
 void updateLastActivity() {
   lastActivity = millis();
@@ -108,7 +132,21 @@ void wakeDisplay() {
   u8g2.setPowerSave(0);
   displayOff = false;
   while (anyButtonPressed()) {}
+
+  upDebounceTime = 0;
+  downDebounceTime = 0;
+  selDebounceTime = 0;
+  leftDebounceTime = 0;
+  rightDebounceTime = 0;
+
+  upPressed = false;
+  downPressed = false;
+  selPrev = false;
+  leftPrev = false;
+  rightPrev = false;
+
   updateLastActivity();
+  needsRedraw = true;
 }
 
 void checkIdle() {
@@ -122,20 +160,12 @@ void checkIdle() {
     return;
   }
   if (displayOff && anyButtonPressed()) {
-    wakeDisplay();
+    delay(10);
+    if (anyButtonPressed()) {
+      wakeDisplay();
+    }
   }
 }
-
-unsigned long upLastMillis    = 0;
-unsigned long upNextRepeat    = 0;
-bool         upPressed        = false;
-
-unsigned long downLastMillis  = 0;
-unsigned long downNextRepeat  = 0;
-bool         downPressed      = false;
-
-const unsigned long initialDelay   = 500;
-const unsigned long repeatInterval = 250;
 
 const int ITEM_HEIGHT = 16;
 const int ITEM_SPACING = 2;
@@ -202,9 +232,6 @@ constexpr uint8_t BUTTON_SEL   = BUTTON_PIN_CENTER;
 constexpr uint8_t BUTTON_DOWN  = BUTTON_PIN_DOWN;
 constexpr uint8_t BUTTON_RIGHT = BUTTON_PIN_RIGHT;
 constexpr uint8_t BUTTON_LEFT  = BUTTON_PIN_LEFT;
-bool selPrev = false;
-bool rightPrev = false;
-bool leftPrev = false;
 
 static unsigned long appStartTime = 0;
 static unsigned long lastXPReward = 0;
@@ -215,10 +242,16 @@ static int pendingXP = 0;
 static unsigned long totalActiveMinutes = 0;
 const unsigned long XP_REWARD_INTERVAL = 60000;
 
-bool justPressed(uint8_t pin, bool &prev) {
+bool justPressed(uint8_t pin, bool &prev, unsigned long &debounceTime) {
   bool now = digitalRead(pin) == LOW;
-  if (now && !prev) { prev = true; return true; }
-  if (!now) prev = false;
+  unsigned long currentTime = millis();
+
+  if (now != prev && (currentTime - debounceTime) > debounceDelay) {
+    debounceTime = currentTime;
+    prev = now;
+    return now;
+  }
+
   return false;
 }
 
@@ -461,6 +494,8 @@ void enterMenu(AppMenuState st) {
       }
     }
   }
+
+  needsRedraw = true;
 }
 
 void runApp(MenuItem &mi) {
@@ -509,6 +544,8 @@ void runApp(MenuItem &mi) {
 }
 
 void setup() {
+  Serial.begin(115200);
+
   neopixelSetup();
   for (auto &r : radios) {
     r.begin();
@@ -575,63 +612,88 @@ void setup() {
 
   levelSystemSetup();
   enterMenu(APP_MAIN);
-  
+
   initNyanboxAdvertiser();
   startNyanboxAdvertiser();
+
+  displayMirrorSetup();
 }
 
 void loop() {
+  if (Serial.available() > 0) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd == "MIRROR_ON") {
+      displayMirrorEnable(true);
+      needsRedraw = true;
+    } else if (cmd == "MIRROR_OFF") {
+      displayMirrorEnable(false);
+    }
+  }
+
   checkIdle();
+
+  if (displayOff) {
+    return;
+  }
+
   updateAppXP();
   neopixelLoop();
   updateNyanboxAdvertiser();
 
   bool upNow = (digitalRead(BUTTON_PIN_UP) == LOW);
   bool downNow = (digitalRead(BUTTON_PIN_DOWN) == LOW);
+  unsigned long currentTime = millis();
 
   if (upNow) {
     updateLastActivity();
-    if (!upPressed) {
+    if (!upPressed && (currentTime - upDebounceTime) > debounceDelay) {
+      upDebounceTime = currentTime;
       if (item_selected > 0) {
         item_selected--;
       } else {
         item_selected = getVisibleMenuSize() - 1;
       }
-      upLastMillis = millis();
+      upLastMillis = currentTime;
       upNextRepeat = upLastMillis + initialDelay;
-    } else if (millis() >= upNextRepeat) {
+      needsRedraw = true;
+    } else if (upPressed && currentTime >= upNextRepeat) {
       if (item_selected > 0) {
         item_selected--;
       } else {
         item_selected = getVisibleMenuSize() - 1;
       }
       upNextRepeat += repeatInterval;
+      needsRedraw = true;
     }
   }
   upPressed = upNow;
 
   if (downNow) {
     updateLastActivity();
-    if (!downPressed) {
+    if (!downPressed && (currentTime - downDebounceTime) > debounceDelay) {
+      downDebounceTime = currentTime;
       if (item_selected < getVisibleMenuSize() - 1) {
         item_selected++;
       } else {
         item_selected = 0;
       }
-      downLastMillis = millis();
+      downLastMillis = currentTime;
       downNextRepeat = downLastMillis + initialDelay;
-    } else if (millis() >= downNextRepeat) {
+      needsRedraw = true;
+    } else if (downPressed && currentTime >= downNextRepeat) {
       if (item_selected < getVisibleMenuSize() - 1) {
         item_selected++;
       } else {
         item_selected = 0;
       }
       downNextRepeat += repeatInterval;
+      needsRedraw = true;
     }
   }
   downPressed = downNow;
 
-  if (justPressed(BUTTON_SEL, selPrev)) {
+  if (justPressed(BUTTON_SEL, selPrev, selDebounceTime)) {
     updateLastActivity();
     if (currentState != APP_LEVEL) {
       MenuItem *sel = getVisibleMenuItem(item_selected);
@@ -644,23 +706,25 @@ void loop() {
           enterMenu(APP_MAIN);
         } else {
           runApp(*sel);
+          needsRedraw = true;
         }
       }
     }
   }
 
-  if (justPressed(BUTTON_LEFT, leftPrev)) {
+  if (justPressed(BUTTON_LEFT, leftPrev, leftDebounceTime)) {
     updateLastActivity();
     if (currentState == APP_LEVEL) {
       enterMenu(APP_MAIN);
     }
   }
 
-  if (justPressed(BUTTON_RIGHT, rightPrev)) {
+  if (justPressed(BUTTON_RIGHT, rightPrev, rightDebounceTime)) {
     updateLastActivity();
     if (currentState == APP_MAIN) {
       currentState = APP_LEVEL;
       levelSystemSetup();
+      needsRedraw = true;
     }
   }
 
@@ -670,47 +734,52 @@ void loop() {
     if (currentState == APP_MAIN) {
       updateNyanboxAdvertiser();
     }
-    u8g2.clearBuffer();
-    
-    int start;
-    if (item_selected == 0) start = 0;
-    else if (item_selected == getVisibleMenuSize() - 1) start = max(0, getVisibleMenuSize() - 3);
-    else start = item_selected - 1;
 
-    int highlight = item_selected - start;
+    if (needsRedraw) {
+      u8g2.clearBuffer();
 
-    int selectionY = 6 + (highlight * (ITEM_HEIGHT + ITEM_SPACING));
-    drawSelection(SELECTION_X, selectionY, SELECTION_WIDTH, ITEM_HEIGHT, true);
+      int start;
+      if (item_selected == 0) start = 0;
+      else if (item_selected == getVisibleMenuSize() - 1) start = max(0, getVisibleMenuSize() - 3);
+      else start = item_selected - 1;
 
-    for (int i = 0; i < 3; i++) {
-      int idx = start + i;
-      if (idx < getVisibleMenuSize()) {
-        MenuItem *item = getVisibleMenuItem(idx);
-        int itemY = 6 + (i * (ITEM_HEIGHT + ITEM_SPACING));
-        int textY = itemY + 11;
+      int highlight = item_selected - start;
 
-        u8g2.setFont(u8g2_font_helvR08_tr);
-        u8g2.drawStr(TEXT_X, textY, item->name);
+      int selectionY = 6 + (highlight * (ITEM_HEIGHT + ITEM_SPACING));
+      drawSelection(SELECTION_X, selectionY, SELECTION_WIDTH, ITEM_HEIGHT, true);
 
-        if (item->icon) {
-          int iconY = itemY;
-          u8g2.drawXBMP(ICON_X, iconY, 16, 16, item->icon);
+      for (int i = 0; i < 3; i++) {
+        int idx = start + i;
+        if (idx < getVisibleMenuSize()) {
+          MenuItem *item = getVisibleMenuItem(idx);
+          int itemY = 6 + (i * (ITEM_HEIGHT + ITEM_SPACING));
+          int textY = itemY + 11;
+
+          u8g2.setFont(u8g2_font_helvR08_tr);
+          u8g2.drawStr(TEXT_X, textY, item->name);
+
+          if (item->icon) {
+            int iconY = itemY;
+            u8g2.drawXBMP(ICON_X, iconY, 16, 16, item->icon);
+          }
         }
       }
-    }
 
-    if (currentState == APP_MAIN) {
-      u8g2.setFont(u8g2_font_5x8_tr);
-      char levelStr[16];
-      sprintf(levelStr, "Level %d", getCurrentLevel());
-      int levelWidth = u8g2.getUTF8Width(levelStr);
-      u8g2.drawStr(128 - levelWidth, 8, levelStr);
-      
-      const char* rightHint = "Level Menu ->";
-      int rightHintWidth = u8g2.getUTF8Width(rightHint);
-      u8g2.drawStr(128 - rightHintWidth, 64, rightHint);
-    }
+      if (currentState == APP_MAIN) {
+        u8g2.setFont(u8g2_font_5x8_tr);
+        char levelStr[16];
+        sprintf(levelStr, "Level %d", getCurrentLevel());
+        int levelWidth = u8g2.getUTF8Width(levelStr);
+        u8g2.drawStr(128 - levelWidth, 8, levelStr);
 
-    u8g2.sendBuffer();
+        const char* rightHint = "Level Menu ->";
+        int rightHintWidth = u8g2.getUTF8Width(rightHint);
+        u8g2.drawStr(128 - rightHintWidth, 64, rightHint);
+      }
+
+      u8g2.sendBuffer();
+      displayMirrorSend(u8g2);
+      needsRedraw = false;
+    }
   }
 }

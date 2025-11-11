@@ -5,6 +5,7 @@
 
 #include "../include/evil_portal.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "../include/pindefs.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -53,6 +54,19 @@ bool portal_isScanning = false;
 const unsigned long SCAN_INTERVAL = 60000;
 const unsigned long SCAN_DURATION = 8000;
 const unsigned long DISPLAY_UPDATE_INTERVAL = 100;
+
+static bool needsRedraw = true;
+static int lastMenuSelection = -1;
+static int lastCredIndex = -1;
+static int lastConnectedClients = -1;
+static int lastTotalVisitors = -1;
+static int lastCapturedCredsSize = 0;
+static int lastScannedSSIDsSize = 0;
+static EvilPortalState lastState = PORTAL_MENU;
+static String lastCurrentSSID = "";
+static int lastCurrentTemplate = -1;
+static unsigned long lastStatusUpdate = 0;
+const unsigned long statusUpdateInterval = 1000;
 
 const char* customSSIDs[] = {
     "Free WiFi", "Guest", "Hotel WiFi", "Airport WiFi",
@@ -348,43 +362,53 @@ void startScan() {
 
 void updateScan() {
     unsigned long now = millis();
-    
-    // Check for new APs
+
     uint16_t currentApCount = 0;
     esp_wifi_scan_get_ap_num(&currentApCount);
-    
+
     if (currentApCount > portal_lastApCount) {
         processScanResults(now);
         portal_lastApCount = currentApCount;
     }
-    
+
+    if (lastScannedSSIDsSize != (int)scannedSSIDs.size()) {
+        lastScannedSSIDsSize = (int)scannedSSIDs.size();
+        needsRedraw = true;
+    }
+
     if (now - portal_lastDisplayUpdate > DISPLAY_UPDATE_INTERVAL) {
+        portal_lastDisplayUpdate = now;
+        needsRedraw = true;
+    }
+
+    if (needsRedraw) {
+        needsRedraw = false;
+
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_6x10_tr);
         u8g2.drawStr(0, 10, "Scanning WiFi...");
-        
+
         char countStr[32];
         snprintf(countStr, sizeof(countStr), "Found: %d networks", (int)scannedSSIDs.size());
         u8g2.drawStr(0, 25, countStr);
-        
+
         int barWidth = 120;
         int barHeight = 10;
         int barX = 4;
         int barY = 35;
         u8g2.drawFrame(barX, barY, barWidth, barHeight);
-        
+
         unsigned long elapsed = now - portal_scanStartTime;
         int fillWidth = ((elapsed * (barWidth - 4)) / SCAN_DURATION);
         if (fillWidth > (barWidth - 4)) fillWidth = barWidth - 4;
         if (fillWidth > 0) {
             u8g2.drawBox(barX + 2, barY + 2, fillWidth, barHeight - 4);
         }
-        
+
         u8g2.setFont(u8g2_font_5x8_tr);
         u8g2.drawStr(0, 60, "Press SEL to exit");
         u8g2.sendBuffer();
-        
-        portal_lastDisplayUpdate = now;
+        displayMirrorSend(u8g2);
     }
     
     if (now - portal_scanStartTime > SCAN_DURATION) {
@@ -462,6 +486,7 @@ void drawPortalMenu() {
     u8g2.setFont(u8g2_font_5x8_tr);
     u8g2.drawStr(0, 62, "U/D=NAV R=OK SEL=EXIT");
     u8g2.sendBuffer();
+    displayMirrorSend(u8g2);
 }
 
 void drawPortalStatus() {
@@ -486,18 +511,15 @@ void drawPortalStatus() {
         strcpy(templateStr, templateNames[currentTemplate]);
     }
     u8g2.drawStr(0, 34, templateStr);
-    
-    wifi_sta_list_t stationList;
-    esp_wifi_ap_get_sta_list(&stationList);
-    connectedClients = stationList.num;
-    
+
     char statsStr[32];
     snprintf(statsStr, sizeof(statsStr), "Clients:%d Visits:%d", connectedClients, totalVisitors);
     u8g2.drawStr(0, 46, statsStr);
-    
+
     u8g2.setFont(u8g2_font_5x8_tr);
     u8g2.drawStr(0, 62, "L=Stop SEL=EXIT");
     u8g2.sendBuffer();
+    displayMirrorSend(u8g2);
 }
 
 void drawCredentialsList() {
@@ -568,6 +590,7 @@ void drawCredentialsList() {
     }
     
     u8g2.sendBuffer();
+    displayMirrorSend(u8g2);
 }
 
 }
@@ -580,6 +603,18 @@ void evilPortalSetup() {
     connectedClients = 0;
     currentSSIDIndex = 0;
     menuEnterTime = millis();
+
+    needsRedraw = true;
+    lastMenuSelection = -1;
+    lastCredIndex = -1;
+    lastConnectedClients = -1;
+    lastTotalVisitors = -1;
+    lastCapturedCredsSize = 0;
+    lastScannedSSIDsSize = 0;
+    lastState = PORTAL_MENU;
+    lastCurrentSSID = "";
+    lastCurrentTemplate = -1;
+    lastStatusUpdate = 0;
 
     pinMode(BUTTON_PIN_UP, INPUT_PULLUP);
     pinMode(BUTTON_PIN_DOWN, INPUT_PULLUP);
@@ -621,13 +656,18 @@ void evilPortalSetup() {
 
 void evilPortalLoop() {
     unsigned long now = millis();
-    
+
     static bool upPressed = false, downPressed = false;
     static bool rightPressed = false, leftPressed = false;
     bool upNow = digitalRead(BUTTON_PIN_UP) == LOW;
     bool downNow = digitalRead(BUTTON_PIN_DOWN) == LOW;
     bool rightNow = digitalRead(BUTTON_PIN_RIGHT) == LOW;
     bool leftNow = digitalRead(BUTTON_PIN_LEFT) == LOW;
+
+    if (lastState != currentState) {
+        lastState = currentState;
+        needsRedraw = true;
+    }
 
     if (currentState == PORTAL_SCANNING) {
         updateScan();
@@ -644,13 +684,32 @@ void evilPortalLoop() {
                 startScan();
                 return;
             }
-            
+
+            if (lastMenuSelection != menuSelection) {
+                lastMenuSelection = menuSelection;
+                needsRedraw = true;
+            }
+            if (lastCurrentSSID != currentSSID) {
+                lastCurrentSSID = currentSSID;
+                needsRedraw = true;
+            }
+            if (lastCurrentTemplate != currentTemplate) {
+                lastCurrentTemplate = currentTemplate;
+                needsRedraw = true;
+            }
+            if (lastCapturedCredsSize != (int)capturedCreds.size()) {
+                lastCapturedCredsSize = (int)capturedCreds.size();
+                needsRedraw = true;
+            }
+
             if (upNow && !upPressed) {
                 menuSelection = (menuSelection - 1 + 4) % 4;
+                needsRedraw = true;
                 delay(200);
             }
             if (downNow && !downPressed) {
                 menuSelection = (menuSelection + 1) % 4;
+                needsRedraw = true;
                 delay(200);
             }
             if (rightNow && !rightPressed) {
@@ -658,9 +717,11 @@ void evilPortalLoop() {
                     case 0:
                         setupPortalAP();
                         currentState = PORTAL_RUNNING;
+                        needsRedraw = true;
                         break;
                     case 1:
                         currentTemplate = (currentTemplate + 1) % numTemplates;
+                        needsRedraw = true;
                         break;
                     case 2:
                         if (!scannedSSIDs.empty()) {
@@ -671,15 +732,21 @@ void evilPortalLoop() {
                             ssidIndex = (ssidIndex + 1) % customSSIDCount;
                             currentSSID = String(customSSIDs[ssidIndex]);
                         }
+                        needsRedraw = true;
                         break;
                     case 3:
                         currentState = PORTAL_VIEW_CREDS;
                         credIndex = 0;
+                        needsRedraw = true;
                         break;
                 }
                 delay(200);
             }
-            drawPortalMenu();
+
+            if (needsRedraw) {
+                needsRedraw = false;
+                drawPortalMenu();
+            }
             break;
             
         case PORTAL_RUNNING:
@@ -693,29 +760,68 @@ void evilPortalLoop() {
 
                 currentState = PORTAL_MENU;
                 menuEnterTime = millis();
+                needsRedraw = true;
                 delay(200);
             }
             portalDNS.processNextRequest();
             portalServer.handleClient();
-            
-            drawPortalStatus();
+
+            wifi_sta_list_t stationList;
+            esp_wifi_ap_get_sta_list(&stationList);
+            connectedClients = stationList.num;
+
+            if (lastConnectedClients != connectedClients) {
+                lastConnectedClients = connectedClients;
+                needsRedraw = true;
+            }
+            if (lastTotalVisitors != totalVisitors) {
+                lastTotalVisitors = totalVisitors;
+                needsRedraw = true;
+            }
+
+            if (now - lastStatusUpdate >= statusUpdateInterval) {
+                lastStatusUpdate = now;
+                needsRedraw = true;
+            }
+
+            if (needsRedraw) {
+                needsRedraw = false;
+                drawPortalStatus();
+            }
             break;
             
         case PORTAL_VIEW_CREDS:
+            if (lastCredIndex != credIndex) {
+                lastCredIndex = credIndex;
+                needsRedraw = true;
+            }
+
+            if (now - lastStatusUpdate >= statusUpdateInterval) {
+                lastStatusUpdate = now;
+                needsRedraw = true;
+            }
+
             if (upNow && !upPressed && !capturedCreds.empty()) {
                 credIndex = (credIndex - 1 + capturedCreds.size()) % capturedCreds.size();
+                needsRedraw = true;
                 delay(200);
             }
             if (downNow && !downPressed && !capturedCreds.empty()) {
                 credIndex = (credIndex + 1) % capturedCreds.size();
+                needsRedraw = true;
                 delay(200);
             }
             if (leftNow && !leftPressed) {
                 currentState = PORTAL_MENU;
                 menuEnterTime = millis();
+                needsRedraw = true;
                 delay(200);
             }
-            drawCredentialsList();
+
+            if (needsRedraw) {
+                needsRedraw = false;
+                drawCredentialsList();
+            }
             break;
     }
     upPressed = upNow;

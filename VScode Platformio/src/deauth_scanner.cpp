@@ -7,6 +7,7 @@
 #include "../include/deauth_scanner.h"
 #include "../include/sleep_manager.h"
 #include "../include/pindefs.h"
+#include "../include/display_mirror.h"
 #include <U8g2lib.h>
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -37,6 +38,15 @@ static bool macSeen = false;
 static unsigned long lastChannelHop = 0;
 static unsigned long lastButtonPress = 0;
 const unsigned long debounceTime = 200;
+
+static bool needsRedraw = true;
+static uint16_t lastDisplayedDeauthCount = 0;
+static uint16_t lastDisplayedTotalDeauths = 0;
+static uint8_t lastDisplayedChannel = 0;
+static bool lastDisplayedMode = true;
+static bool lastMacSeen = false;
+static unsigned long lastPeriodicUpdate = 0;
+const unsigned long periodicUpdateInterval = 1000;
 
 // Bypass sanity checks for raw 802.11 frames
 extern "C" int ieee80211_raw_frame_sanity_check(int32_t, int32_t, int32_t) {
@@ -76,6 +86,7 @@ void packetSniffer(void *buf, wifi_promiscuous_pkt_type_t type) {
         macSeen = true;
         deauthCount++;
         totalDeauths++;
+        needsRedraw = true;
     }
 }
 
@@ -107,6 +118,14 @@ void deauthScannerSetup() {
     lastDeauthChannel = 0;
     lastChannelHop = millis();
     lastButtonPress = 0;
+
+    needsRedraw = true;
+    lastDisplayedDeauthCount = 0;
+    lastDisplayedTotalDeauths = 0;
+    lastDisplayedChannel = 0;
+    lastDisplayedMode = true;
+    lastMacSeen = false;
+    lastPeriodicUpdate = millis();
 
     pinMode(BTN_UP, INPUT_PULLUP);
     pinMode(BTN_DOWN, INPUT_PULLUP);
@@ -162,6 +181,7 @@ void renderDeauthStats() {
     u8g2.drawStr((128 - instrWidth) / 2, 64, instruction);
     
     u8g2.sendBuffer();
+    displayMirrorSend(u8g2);
 }
 
 void hopChannel() {
@@ -175,32 +195,67 @@ void hopChannel() {
 
     esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
     deauthCount = 0;
+    needsRedraw = true;
 }
 
 void deauthScannerLoop() {
     unsigned long now = millis();
-    
+
     if (now - lastButtonPress > debounceTime) {
         if (digitalRead(BTN_BACK) == LOW) {
             useMainChannels = !useMainChannels;
-            
+
             if (useMainChannels) {
                 currentChannelIndex = 0;
                 currentChannel = mainChannels[currentChannelIndex];
             } else {
                 currentChannel = CHANNEL_MIN;
             }
-            
+
             esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
             deauthCount = 0;
             lastButtonPress = now;
+            needsRedraw = true;
         }
     }
-    
+
     if (now - lastChannelHop >= CHANNEL_HOP_INTERVAL) {
         hopChannel();
         lastChannelHop = now;
     }
 
-    renderDeauthStats();
+    if (deauthCount != lastDisplayedDeauthCount) {
+        lastDisplayedDeauthCount = deauthCount;
+        needsRedraw = true;
+    }
+
+    if (totalDeauths != lastDisplayedTotalDeauths) {
+        lastDisplayedTotalDeauths = totalDeauths;
+        needsRedraw = true;
+    }
+
+    if (currentChannel != lastDisplayedChannel) {
+        lastDisplayedChannel = currentChannel;
+        needsRedraw = true;
+    }
+
+    if (useMainChannels != lastDisplayedMode) {
+        lastDisplayedMode = useMainChannels;
+        needsRedraw = true;
+    }
+
+    if (macSeen != lastMacSeen) {
+        lastMacSeen = macSeen;
+        needsRedraw = true;
+    }
+
+    if (now - lastPeriodicUpdate >= periodicUpdateInterval) {
+        lastPeriodicUpdate = now;
+        needsRedraw = true;
+    }
+
+    if (needsRedraw) {
+        renderDeauthStats();
+        needsRedraw = false;
+    }
 }

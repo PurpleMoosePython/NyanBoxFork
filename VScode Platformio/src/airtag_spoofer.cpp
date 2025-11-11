@@ -7,6 +7,7 @@
 #include "../include/airtag_spoofer.h"
 #include "../include/airtag_detector.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "esp_bt.h"
 #include "esp_gap_ble_api.h"
 #include "esp_bt_main.h"
@@ -39,6 +40,11 @@ static int currentCloneAllIndex = 0;
 static unsigned long lastButtonPress = 0;
 const unsigned long debounceTime = 200;
 const unsigned long advertiseInterval = 10;
+
+static bool needsRedraw = true;
+static AirTagSpooferState lastState = SPOOFER_MENU;
+static unsigned long lastRunningUpdate = 0;
+const unsigned long runningUpdateInterval = 1000;
 
 static esp_ble_adv_params_t adv_params = {
     .adv_int_min        = 0x20,
@@ -78,6 +84,7 @@ void drawMainMenu() {
   }
 
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 void drawCloneSelect() {
@@ -102,6 +109,7 @@ void drawCloneSelect() {
   u8g2.drawStr(0, 62, "U/D=Scroll R=Start L=Back SEL=Exit");
 
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 void drawCloneRunning() {
@@ -123,6 +131,7 @@ void drawCloneRunning() {
   u8g2.drawStr(0, 62, "L=Back SEL=Exit");
 
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 void drawCloneAllRunning() {
@@ -140,6 +149,7 @@ void drawCloneAllRunning() {
   u8g2.drawStr(0, 62, "L=Back SEL=Exit");
 
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 void initializeAdvertising() {
@@ -209,6 +219,9 @@ void airtagSpooferSetup() {
   lastButtonPress = 0;
   currentState = SPOOFER_MENU;
   bleInitialized = false;
+  needsRedraw = true;
+  lastState = SPOOFER_MENU;
+  lastRunningUpdate = 0;
 
   u8g2.begin();
   u8g2.setFont(u8g2_font_6x10_tr);
@@ -225,6 +238,11 @@ void airtagSpooferSetup() {
 void airtagSpooferLoop() {
   unsigned long now = millis();
 
+  if (currentState != lastState) {
+    lastState = currentState;
+    needsRedraw = true;
+  }
+
   static bool upPressed = false, downPressed = false;
   static bool rightPressed = false, leftPressed = false;
   bool upNow = digitalRead(BTN_UP) == LOW;
@@ -239,20 +257,24 @@ void airtagSpooferLoop() {
       if (!airtagDevices.empty()) {
         if (upNow && !upPressed) {
           menuSelection = (menuSelection - 1 + 2) % 2;
+          needsRedraw = true;
           delay(200);
         }
         if (downNow && !downPressed) {
           menuSelection = (menuSelection + 1) % 2;
+          needsRedraw = true;
           delay(200);
         }
         if (rightNow && !rightPressed) {
           switch (menuSelection) {
             case 0:
               currentState = SPOOFER_CLONE_SELECT;
+              needsRedraw = true;
               break;
             case 1:
               startCloneAllSpam();
               currentState = SPOOFER_CLONE_ALL_RUNNING;
+              needsRedraw = true;
               break;
           }
           delay(200);
@@ -263,25 +285,32 @@ void airtagSpooferLoop() {
         return;
       }
 
-      drawMainMenu();
+      if (needsRedraw) {
+        drawMainMenu();
+        needsRedraw = false;
+      }
       break;
 
     case SPOOFER_CLONE_SELECT:
       if (upNow && !upPressed) {
         cloneTargetIndex = (cloneTargetIndex - 1 + airtagDevices.size()) % airtagDevices.size();
+        needsRedraw = true;
         delay(200);
       }
       if (downNow && !downPressed) {
         cloneTargetIndex = (cloneTargetIndex + 1) % airtagDevices.size();
+        needsRedraw = true;
         delay(200);
       }
       if (rightNow && !rightPressed) {
         startSingleClone();
         currentState = SPOOFER_CLONE_RUNNING;
+        needsRedraw = true;
         delay(200);
       }
       if (leftNow && !leftPressed) {
         currentState = SPOOFER_MENU;
+        needsRedraw = true;
         delay(200);
       }
       if (centerNow) {
@@ -289,13 +318,17 @@ void airtagSpooferLoop() {
         return;
       }
 
-      drawCloneSelect();
+      if (needsRedraw) {
+        drawCloneSelect();
+        needsRedraw = false;
+      }
       break;
 
     case SPOOFER_CLONE_RUNNING:
       if (leftNow && !leftPressed) {
         stopAdvertising();
         currentState = SPOOFER_CLONE_SELECT;
+        needsRedraw = true;
         delay(200);
       }
       if (centerNow) {
@@ -310,13 +343,22 @@ void airtagSpooferLoop() {
         startSingleClone();
       }
 
-      drawCloneRunning();
+      if (now - lastRunningUpdate >= runningUpdateInterval) {
+        lastRunningUpdate = now;
+        needsRedraw = true;
+      }
+
+      if (needsRedraw) {
+        drawCloneRunning();
+        needsRedraw = false;
+      }
       break;
 
     case SPOOFER_CLONE_ALL_RUNNING:
       if (leftNow && !leftPressed) {
         stopAdvertising();
         currentState = SPOOFER_MENU;
+        needsRedraw = true;
         delay(200);
       }
       if (centerNow) {
@@ -334,7 +376,15 @@ void airtagSpooferLoop() {
         startSingleClone();
       }
 
-      drawCloneAllRunning();
+      if (now - lastRunningUpdate >= runningUpdateInterval) {
+        lastRunningUpdate = now;
+        needsRedraw = true;
+      }
+
+      if (needsRedraw) {
+        drawCloneAllRunning();
+        needsRedraw = false;
+      }
       break;
   }
 

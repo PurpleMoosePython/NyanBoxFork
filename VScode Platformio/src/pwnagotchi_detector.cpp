@@ -7,6 +7,7 @@
 
 #include "../include/pwnagotchi_detector.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include <ArduinoJson.h>
@@ -42,6 +43,15 @@ static const int numChannels = sizeof(channels) / sizeof(channels[0]);
 static int currentChannelIndex = 0;
 static uint32_t lastHop = 0;
 static bool wifiWasInitialized = false;
+
+static bool needsRedraw = true;
+static int lastPwnagotchiSize = 0;
+static int lastCurrentIndex = -1;
+static int lastListStartIndex = -1;
+static bool lastIsDetailView = false;
+static bool lastIsLocateMode = false;
+static unsigned long lastPeriodicUpdate = 0;
+const unsigned long periodicUpdateInterval = 1000;
 
 void IRAM_ATTR pwnagotchiSnifferCallback(void *buf, wifi_promiscuous_pkt_type_t type) {
   if (type != WIFI_PKT_MGMT)
@@ -106,6 +116,7 @@ void IRAM_ATTR pwnagotchiSnifferCallback(void *buf, wifi_promiscuous_pkt_type_t 
       e.uptime = jsUptime;
       e.channel = ch;
       e.rssi = rssi;
+      needsRedraw = true;
       return;
     }
   }
@@ -113,6 +124,7 @@ void IRAM_ATTR pwnagotchiSnifferCallback(void *buf, wifi_promiscuous_pkt_type_t 
   if (!isLocateMode) {
     pwnagotchi.push_back(
         {String(jsName), String(jsVer), jsPwnd, jsDeauth, jsUptime, ch, rssi});
+    needsRedraw = true;
   }
 }
 
@@ -124,6 +136,14 @@ void pwnagotchiDetectorSetup() {
   isLocateMode = false;
   locateTargetName = "";
   lastButtonPress = 0;
+
+  needsRedraw = true;
+  lastPwnagotchiSize = 0;
+  lastCurrentIndex = -1;
+  lastListStartIndex = -1;
+  lastIsDetailView = false;
+  lastIsLocateMode = false;
+  lastPeriodicUpdate = 0;
 
   u8g2.begin();
   u8g2.setFont(u8g2_font_6x10_tr);
@@ -144,7 +164,7 @@ void pwnagotchiDetectorSetup() {
 
   esp_wifi_set_mode(WIFI_MODE_STA);
   esp_wifi_start();
-  
+
   esp_wifi_set_ps(WIFI_PS_NONE);
 
   pinMode(BTN_UP, INPUT_PULLUP);
@@ -176,32 +196,41 @@ void pwnagotchiDetectorLoop() {
       if (currentIndex < listStartIndex)
         --listStartIndex;
       lastButtonPress = now;
+      needsRedraw = true;
     } else if (!isDetailView && !isLocateMode && digitalRead(BTN_DOWN) == LOW &&
                currentIndex < (int)pwnagotchi.size() - 1) {
       ++currentIndex;
       if (currentIndex >= listStartIndex + 5)
         ++listStartIndex;
       lastButtonPress = now;
+      needsRedraw = true;
     } else if (!isDetailView && !isLocateMode && digitalRead(BTN_SELECT) == LOW &&
                !pwnagotchi.empty()) {
       isDetailView = true;
       lastButtonPress = now;
+      needsRedraw = true;
     } else if (isDetailView && !isLocateMode && digitalRead(BTN_SELECT) == LOW &&
                !pwnagotchi.empty()) {
       isLocateMode = true;
       locateTargetName = pwnagotchi[currentIndex].name;
       lastButtonPress = now;
+      needsRedraw = true;
     } else if (isLocateMode && digitalRead(BTN_BACK) == LOW) {
       isLocateMode = false;
       locateTargetName = "";
       lastButtonPress = now;
+      needsRedraw = true;
     } else if (isDetailView && !isLocateMode && digitalRead(BTN_BACK) == LOW) {
       isDetailView = false;
       lastButtonPress = now;
+      needsRedraw = true;
     }
   }
 
   if (pwnagotchi.empty()) {
+    if (currentIndex != 0 || listStartIndex != 0 || isDetailView || isLocateMode) {
+      needsRedraw = true;
+    }
     currentIndex = 0;
     listStartIndex = 0;
     isDetailView = false;
@@ -209,9 +238,41 @@ void pwnagotchiDetectorLoop() {
     locateTargetName = "";
   }
 
+  if (lastPwnagotchiSize != (int)pwnagotchi.size()) {
+    lastPwnagotchiSize = (int)pwnagotchi.size();
+    needsRedraw = true;
+  }
+  if (lastCurrentIndex != currentIndex) {
+    lastCurrentIndex = currentIndex;
+    needsRedraw = true;
+  }
+  if (lastListStartIndex != listStartIndex) {
+    lastListStartIndex = listStartIndex;
+    needsRedraw = true;
+  }
+  if (lastIsDetailView != isDetailView) {
+    lastIsDetailView = isDetailView;
+    needsRedraw = true;
+  }
+  if (lastIsLocateMode != isLocateMode) {
+    lastIsLocateMode = isLocateMode;
+    needsRedraw = true;
+  }
+
+  if (isLocateMode && now - lastPeriodicUpdate >= periodicUpdateInterval) {
+    lastPeriodicUpdate = now;
+    needsRedraw = true;
+  }
+
+  if (!needsRedraw) {
+    return;
+  }
+
+  needsRedraw = false;
   u8g2.clearBuffer();
 
   if (pwnagotchi.empty()) {
+    u8g2.setFont(u8g2_font_6x10_tr);
     u8g2.drawStr(0, 10, "Scanning for");
     u8g2.drawStr(0, 20, "Pwnagotchis...");
     u8g2.drawStr(0, 45, "Press SEL to stop");
@@ -294,8 +355,8 @@ void pwnagotchiDetectorLoop() {
       isDetailView = false;
     }
   } else {
-    u8g2.drawStr(0, 10, "Pwnagotchi list:");
     u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(0, 10, "Pwnagotchi list:");
     for (int i = 0; i < 5; ++i) {
       int idx = listStartIndex + i;
       if (idx >= (int)pwnagotchi.size())
@@ -311,4 +372,5 @@ void pwnagotchiDetectorLoop() {
   }
 
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }

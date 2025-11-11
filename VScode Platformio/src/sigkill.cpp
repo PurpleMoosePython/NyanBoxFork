@@ -6,6 +6,7 @@
 #include <Arduino.h>
 #include "../include/sigkill.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "../include/icon.h"
 #include "../include/pindefs.h"
 #include <esp_bt_main.h>
@@ -23,7 +24,12 @@ static SigKillMode currentMode = SIG_MENU;
 static ProtocolType selectedProtocol = ALL;
 static int menuSelection = 0;
 static unsigned long lastButtonPress = 0;
-const unsigned long debounceDelay = 200;
+const unsigned long debounceDelay = 150;
+
+static bool needsRedraw = true;
+static int lastMenuSelection = -1;
+static SigKillMode lastMode = SIG_MENU;
+static ProtocolType lastProtocol = ALL;
 
 // Protocol channel definitions
 const byte bluetooth_channels[]        = {32,34,46,48,50,52,0,1,2,4,6,8,22,24,26,28,30,74,76,78,80};
@@ -100,6 +106,7 @@ static void drawSigMenu() {
   u8g2.setFont(u8g2_font_5x8_tr);
   u8g2.drawStr(0, 62, "U/D=Move R=Start SEL=Exit");
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 static void drawActiveJamming(const char* protocolName) {
@@ -118,6 +125,7 @@ static void drawActiveJamming(const char* protocolName) {
   u8g2.drawStr(0, 42, radioStatus);
   u8g2.drawStr(0, 62, "L=Back SEL=Exit");
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 void sigkillSetup() {
@@ -132,7 +140,7 @@ void sigkillSetup() {
       esp_bluedroid_deinit();
       delay(50);
   }
-  
+
   if (btStarted()) {
       btStop();
       delay(50);
@@ -164,44 +172,67 @@ void sigkillSetup() {
   currentMode = SIG_MENU;
   menuSelection = 0;
   selectedProtocol = ALL;
+
+  needsRedraw = true;
+  lastMenuSelection = -1;
+  lastMode = SIG_MENU;
+  lastProtocol = ALL;
+
   powerDownRadios();
   drawSigMenu();
 }
 
 void sigkillLoop() {
   unsigned long now = millis();
-  static SigKillMode previousMode = SIG_MENU;
 
   bool up = digitalRead(BUTTON_PIN_UP) == LOW;
   bool down = digitalRead(BUTTON_PIN_DOWN) == LOW;
   bool left = digitalRead(BUTTON_PIN_LEFT) == LOW;
   bool right = digitalRead(BUTTON_PIN_RIGHT) == LOW;
 
+  if (lastMode != currentMode) {
+    lastMode = currentMode;
+    needsRedraw = true;
+  }
+  if (lastMenuSelection != menuSelection) {
+    lastMenuSelection = menuSelection;
+    needsRedraw = true;
+  }
+  if (lastProtocol != selectedProtocol) {
+    lastProtocol = selectedProtocol;
+    needsRedraw = true;
+  }
+
   switch (currentMode) {
     case SIG_MENU:
-      drawSigMenu();
-
       if (now - lastButtonPress > debounceDelay) {
         if (up) {
           menuSelection = (menuSelection - 1 + 9) % 9;
+          needsRedraw = true;
           lastButtonPress = now;
         } else if (down) {
           menuSelection = (menuSelection + 1) % 9;
+          needsRedraw = true;
           lastButtonPress = now;
         } else if (right) {
           selectedProtocol = (ProtocolType)menuSelection;
           currentMode = SIG_JAMMING;
+          needsRedraw = true;
           initializeRadios();
-          drawActiveJamming(protocolNames[selectedProtocol]);
           lastButtonPress = now;
         }
+      }
+
+      if (needsRedraw) {
+        needsRedraw = false;
+        drawSigMenu();
       }
       break;
 
     case SIG_JAMMING:
-      if (currentMode != previousMode) {
+      if (needsRedraw) {
+        needsRedraw = false;
         drawActiveJamming(protocolNames[selectedProtocol]);
-        previousMode = currentMode;
       }
 
       {
@@ -359,7 +390,7 @@ void sigkillLoop() {
       if (left && now - lastButtonPress > debounceDelay) {
         powerDownRadios();
         currentMode = SIG_MENU;
-        previousMode = SIG_JAMMING;
+        needsRedraw = true;
         lastButtonPress = now;
       }
       break;

@@ -3,9 +3,10 @@
    https://github.com/jbohack/nyanBOX
    ________________________________________ */
    
-#include <Arduino.h> 
+#include <Arduino.h>
 #include "../include/analyzer.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "../include/setting.h"
 #include <esp_bt_main.h>
 
@@ -276,4 +277,5 @@ void renderSpectrum() {
     }
 
     u8g2.sendBuffer();
+    displayMirrorSend(u8g2);
 }

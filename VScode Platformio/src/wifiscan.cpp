@@ -5,6 +5,7 @@
 
 #include "../include/wifiscan.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include <vector>
@@ -50,6 +51,14 @@ const unsigned long displayUpdateInterval = 100;
 
 bool wifiscan_scanCompleted = false;
 uint16_t wifiscan_lastApCount = 0;
+
+static bool needsRedraw = true;
+static int lastNetworkCount = 0;
+static unsigned long lastLocateUpdate = 0;
+const unsigned long locateUpdateInterval = 1000;
+static unsigned long lastCountdownUpdate = 0;
+const unsigned long countdownUpdateInterval = 1000;
+static bool wasScanning = false;
 
 const char* getAuthModeString(wifi_auth_mode_t authMode) {
     switch (authMode) {
@@ -164,6 +173,11 @@ void wifiscanSetup() {
   wifiscan_scanCompleted = false;
   wifiscan_lastApCount = 0;
   wifiscan_lastDisplayUpdate = 0;
+  needsRedraw = true;
+  lastNetworkCount = 0;
+  lastLocateUpdate = 0;
+  lastCountdownUpdate = 0;
+  wasScanning = false;
 
   u8g2.begin();
   u8g2.setFont(u8g2_font_6x10_tr);
@@ -176,6 +190,7 @@ void wifiscanSetup() {
   u8g2.setFont(u8g2_font_5x8_tr);
   u8g2.drawStr(0, 60, "Press SEL to exit");
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   esp_wifi_init(&cfg);
@@ -256,7 +271,13 @@ void wifiscanLoop() {
     }
 
     if (!isLocateMode) {
-      if (now - wifiscan_lastDisplayUpdate > displayUpdateInterval) {
+      if (wasScanning && !wifiscan_isScanning) {
+        wasScanning = wifiscan_isScanning;
+        needsRedraw = true;
+      } else if (lastNetworkCount != (int)wifiNetworks.size() || wasScanning != wifiscan_isScanning) {
+        lastNetworkCount = (int)wifiNetworks.size();
+        wasScanning = wifiscan_isScanning;
+
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_6x10_tr);
         u8g2.drawStr(0, 10, "Scanning for");
@@ -281,11 +302,17 @@ void wifiscanLoop() {
         u8g2.setFont(u8g2_font_5x8_tr);
         u8g2.drawStr(0, 62, "Press SEL to exit");
         u8g2.sendBuffer();
-
-        wifiscan_lastDisplayUpdate = now;
+        displayMirrorSend(u8g2);
+        return;
+      } else {
+        return;
       }
-      return;
     }
+  }
+
+  if (wasScanning != wifiscan_isScanning) {
+    wasScanning = wifiscan_isScanning;
+    needsRedraw = true;
   }
 
   if (!wifiscan_isScanning && wifiscan_scanCompleted && now - wifiscan_lastScanTime > scanInterval &&
@@ -337,16 +364,19 @@ void wifiscanLoop() {
       if (currentIndex < listStartIndex)
         --listStartIndex;
       lastButtonPress = now;
+      needsRedraw = true;
     } else if (!isDetailView && !isLocateMode && digitalRead(BTN_DOWN) == LOW &&
                currentIndex < (int)wifiNetworks.size() - 1) {
       ++currentIndex;
       if (currentIndex >= listStartIndex + 5)
         ++listStartIndex;
       lastButtonPress = now;
+      needsRedraw = true;
     } else if (!isDetailView && !isLocateMode && digitalRead(BTN_RIGHT) == LOW &&
                !wifiNetworks.empty()) {
       isDetailView = true;
       lastButtonPress = now;
+      needsRedraw = true;
     } else if (isDetailView && !isLocateMode && digitalRead(BTN_RIGHT) == LOW &&
                !wifiNetworks.empty()) {
       isLocateMode = true;
@@ -372,6 +402,8 @@ void wifiscanLoop() {
         wifiscan_scanStartTime = now;
       }
       lastButtonPress = now;
+      lastLocateUpdate = now;
+      needsRedraw = true;
     } else if (isLocateMode && digitalRead(BTN_BACK) == LOW) {
       isLocateMode = false;
       memset(locateTargetBSSID, 0, sizeof(locateTargetBSSID));
@@ -381,13 +413,18 @@ void wifiscanLoop() {
         wifiscan_isScanning = false;
       }
       lastButtonPress = now;
+      needsRedraw = true;
     } else if (isDetailView && !isLocateMode && digitalRead(BTN_BACK) == LOW) {
       isDetailView = false;
       lastButtonPress = now;
+      needsRedraw = true;
     }
   }
 
   if (wifiNetworks.empty()) {
+    if (currentIndex != 0 || isDetailView || isLocateMode) {
+      needsRedraw = true;
+    }
     currentIndex = listStartIndex = 0;
     isDetailView = false;
     isLocateMode = false;
@@ -399,6 +436,27 @@ void wifiscanLoop() {
         constrain(listStartIndex, 0, max(0, (int)wifiNetworks.size() - 5));
   }
 
+  if (isDetailView && now - lastLocateUpdate >= locateUpdateInterval) {
+    lastLocateUpdate = now;
+    needsRedraw = true;
+  }
+
+  if (isLocateMode && now - lastLocateUpdate >= locateUpdateInterval) {
+    lastLocateUpdate = now;
+    needsRedraw = true;
+  }
+
+  if (wifiNetworks.empty() && wifiscan_scanCompleted && !wifiscan_isScanning &&
+      now - lastCountdownUpdate >= countdownUpdateInterval) {
+    lastCountdownUpdate = now;
+    needsRedraw = true;
+  }
+
+  if (!needsRedraw) {
+    return;
+  }
+
+  needsRedraw = false;
   u8g2.clearBuffer();
 
   if (wifiNetworks.empty()) {
@@ -500,4 +558,5 @@ void wifiscanLoop() {
     }
   }
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }

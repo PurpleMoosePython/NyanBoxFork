@@ -5,6 +5,7 @@
 
 #include "../include/jammer.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "../include/pindefs.h"
 #include "esp_wifi.h"
 #include <Arduino.h>
@@ -63,6 +64,12 @@ static unsigned long rateLast = 0;
 static bool paPrev = HIGH;
 static unsigned long paLast = 0;
 const unsigned long debounce = 200;
+
+static bool needsRedraw = true;
+static bool lastJamming = false;
+static int lastChannels = -1;
+static uint8_t lastDataRateIndex = 255;
+static uint8_t lastPaLevelIndex = 255;
 
 void setRadioParameters() {
   if (!radioA || !radioB || !radioC)
@@ -187,7 +194,7 @@ void jammerSetup() {
       esp_bluedroid_deinit();
       delay(50);
   }
-  
+
   if (btStarted()) {
       btStop();
       delay(50);
@@ -234,6 +241,12 @@ void jammerSetup() {
   } else {
     Serial.println("Failed to initialize one or more radio modules!");
   }
+
+  needsRedraw = true;
+  lastJamming = false;
+  lastChannels = -1;
+  lastDataRateIndex = 255;
+  lastPaLevelIndex = 255;
 }
 
 void jammerLoop() {
@@ -250,6 +263,7 @@ void jammerLoop() {
   if (!vCh && chPrev && now - chLast > debounce) {
     pressChannel();
     chLast = now;
+    needsRedraw = true;
   }
   chPrev = vCh;
 
@@ -257,6 +271,7 @@ void jammerLoop() {
   if (!vJam && jamPrev && now - jamLast > debounce) {
     pressJam();
     jamLast = now;
+    needsRedraw = true;
   }
   jamPrev = vJam;
 
@@ -264,6 +279,7 @@ void jammerLoop() {
   if (!vRate && ratePrev && now - rateLast > debounce) {
     pressRate();
     rateLast = now;
+    needsRedraw = true;
   }
   ratePrev = vRate;
 
@@ -271,48 +287,74 @@ void jammerLoop() {
   if (!vPa && paPrev && now - paLast > debounce) {
     pressPa();
     paLast = now;
+    needsRedraw = true;
   }
   paPrev = vPa;
 
-  u8g2.clearBuffer();
-  
-  u8g2.setFont(u8g2_font_helvB10_tr);
-  const char* title = "WLAN Jammer";
-  int titleWidth = u8g2.getUTF8Width(title);
-  u8g2.drawStr((128 - titleWidth) / 2, 12, title);
-  u8g2.drawHLine(16, 15, 96);
-  
-  u8g2.setFont(u8g2_font_helvB08_tr);
-  if (jamming) {
-    const char* status = "ACTIVE";
-    int statusWidth = u8g2.getUTF8Width(status);
-    u8g2.drawStr((128 - statusWidth) / 2, 26, status);
-    jammer();
-  } else {
-    const char* status = "STOPPED";
-    int statusWidth = u8g2.getUTF8Width(status);
-    u8g2.drawStr((128 - statusWidth) / 2, 26, status);
+  if (lastJamming != jamming) {
+    lastJamming = jamming;
+    needsRedraw = true;
   }
-  
-  u8g2.setFont(u8g2_font_helvR08_tr);
-  char settingsText[48];
-  const char* rateLabels[] = {"250K", "1M", "2M"};
-  const char* powerLabels[] = {"MIN", "LOW", "HI", "MAX"};
-  
-  snprintf(settingsText, sizeof(settingsText), "Ch %d | %s | %s", channels, rateLabels[dataRateIndex], powerLabels[paLevelIndex]);
-  int settingsWidth = u8g2.getUTF8Width(settingsText);
-  u8g2.drawStr((128 - settingsWidth) / 2, 36, settingsText);
-  
-  u8g2.setFont(u8g2_font_4x6_tr);
-  
-  const char* line1 = "UP=START/STOP  DOWN=CH";
-  const char* line2 = "R=RATE  L=PWR  SEL=EXIT";
-  
-  int line1Width = u8g2.getUTF8Width(line1);
-  int line2Width = u8g2.getUTF8Width(line2);
-  
-  u8g2.drawStr((128 - line1Width) / 2, 54, line1);
-  u8g2.drawStr((128 - line2Width) / 2, 62, line2);
-  
-  u8g2.sendBuffer();
+  if (lastChannels != channels) {
+    lastChannels = channels;
+    needsRedraw = true;
+  }
+  if (lastDataRateIndex != dataRateIndex) {
+    lastDataRateIndex = dataRateIndex;
+    needsRedraw = true;
+  }
+  if (lastPaLevelIndex != paLevelIndex) {
+    lastPaLevelIndex = paLevelIndex;
+    needsRedraw = true;
+  }
+
+  if (jamming) {
+    jammer();
+  }
+
+  if (needsRedraw) {
+    needsRedraw = false;
+
+    u8g2.clearBuffer();
+
+    u8g2.setFont(u8g2_font_helvB10_tr);
+    const char* title = "WLAN Jammer";
+    int titleWidth = u8g2.getUTF8Width(title);
+    u8g2.drawStr((128 - titleWidth) / 2, 12, title);
+    u8g2.drawHLine(16, 15, 96);
+
+    u8g2.setFont(u8g2_font_helvB08_tr);
+    if (jamming) {
+      const char* status = "ACTIVE";
+      int statusWidth = u8g2.getUTF8Width(status);
+      u8g2.drawStr((128 - statusWidth) / 2, 26, status);
+    } else {
+      const char* status = "STOPPED";
+      int statusWidth = u8g2.getUTF8Width(status);
+      u8g2.drawStr((128 - statusWidth) / 2, 26, status);
+    }
+
+    u8g2.setFont(u8g2_font_helvR08_tr);
+    char settingsText[48];
+    const char* rateLabels[] = {"250K", "1M", "2M"};
+    const char* powerLabels[] = {"MIN", "LOW", "HI", "MAX"};
+
+    snprintf(settingsText, sizeof(settingsText), "Ch %d | %s | %s", channels, rateLabels[dataRateIndex], powerLabels[paLevelIndex]);
+    int settingsWidth = u8g2.getUTF8Width(settingsText);
+    u8g2.drawStr((128 - settingsWidth) / 2, 36, settingsText);
+
+    u8g2.setFont(u8g2_font_4x6_tr);
+
+    const char* line1 = "UP=START/STOP  DOWN=CH";
+    const char* line2 = "R=RATE  L=PWR  SEL=EXIT";
+
+    int line1Width = u8g2.getUTF8Width(line1);
+    int line2Width = u8g2.getUTF8Width(line2);
+
+    u8g2.drawStr((128 - line1Width) / 2, 54, line1);
+    u8g2.drawStr((128 - line2Width) / 2, 62, line2);
+
+    u8g2.sendBuffer();
+    displayMirrorSend(u8g2);
+  }
 }

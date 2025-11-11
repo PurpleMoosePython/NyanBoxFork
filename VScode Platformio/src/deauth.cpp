@@ -7,6 +7,7 @@
 #include "../include/deauth.h"
 #include "../include/sleep_manager.h"
 #include "../include/pindefs.h"
+#include "../include/display_mirror.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 
@@ -42,6 +43,15 @@ static unsigned long scanStartTime = 0;
 
 static bool scanInProgress = false;
 static uint16_t currentScanCount = 0;
+
+static bool needsRedraw = true;
+static Mode lastMode = MODE_MENU;
+static int lastMenuSelection = -1;
+static int lastApIndex = -1;
+static int lastApCount = -1;
+static uint16_t lastScanCount = 0;
+static unsigned long lastScanUpdate = 0;
+const unsigned long scanUpdateInterval = 100;
 
 // Modify to whitelist network SSIDs
 const char *ssidWhitelist[] = {
@@ -91,6 +101,7 @@ void startScan() {
     scanInProgress = true;
     returnMode = currentMode;
     currentMode = MODE_SCANNING;
+    needsRedraw = true;
 
     esp_wifi_set_promiscuous(false);
     esp_wifi_set_mode(WIFI_MODE_APSTA);
@@ -149,12 +160,13 @@ void processScanResults() {
     }
     
     esp_wifi_scan_stop();
-    
+
     esp_wifi_set_promiscuous(true);
-    
+
     scanInProgress = false;
     currentMode = returnMode;
     apIndex = 0;
+    needsRedraw = true;
 }
 
 void drawScanning() {
@@ -183,6 +195,7 @@ void drawScanning() {
     u8g2.setFont(u8g2_font_5x8_tr);
     u8g2.drawStr(0, 60, "Press SEL to exit");
     u8g2.sendBuffer();
+    displayMirrorSend(u8g2);
 }
 
 void drawMenu() {
@@ -194,19 +207,47 @@ void drawMenu() {
     u8g2.setFont(u8g2_font_5x8_tr);
     u8g2.drawStr(0, 62, "U/D=Move R=OK SEL=Exit");
     u8g2.sendBuffer();
+    displayMirrorSend(u8g2);
 }
 
 void drawAll() {
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_6x10_tr);
     u8g2.drawStr(0, 12, "Deauthing all APs");
-    char buf[24];
-    snprintf(buf, sizeof(buf), "Found:%d Ch:%d", apCount,
-             apCount > 0 ? apList[apIndex].channel : 0);
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Networks: %d", apCount);
     u8g2.drawStr(0, 28, buf);
+
+    if (apCount > 0) {
+        char channels[64] = "Ch: ";
+        bool channelUsed[15] = {false};
+
+        for (int i = 0; i < apCount; i++) {
+            int ch = apList[i].channel;
+            if (ch >= 1 && ch <= 14) {
+                channelUsed[ch] = true;
+            }
+        }
+
+        bool first = true;
+        for (int i = 1; i <= 14; i++) {
+            if (channelUsed[i]) {
+                if (!first) strcat(channels, ", ");
+                char chStr[4];
+                snprintf(chStr, sizeof(chStr), "%d", i);
+                strcat(channels, chStr);
+                first = false;
+            }
+        }
+
+        u8g2.drawStr(0, 44, channels);
+    }
+
     u8g2.setFont(u8g2_font_5x8_tr);
     u8g2.drawStr(0, 62, "L=Back SEL=Exit");
     u8g2.sendBuffer();
+    displayMirrorSend(u8g2);
 }
 
 void drawList() {
@@ -230,6 +271,7 @@ void drawList() {
     u8g2.setFont(u8g2_font_5x8_tr);
     u8g2.drawStr(0, 62, "U/D=Scroll R=Start L=Back");
     u8g2.sendBuffer();
+    displayMirrorSend(u8g2);
 }
 
 void drawDeauthSingle() {
@@ -249,6 +291,7 @@ void drawDeauthSingle() {
     u8g2.setFont(u8g2_font_5x8_tr);
     u8g2.drawStr(0, 62, "L=Stop & Back SEL=Exit");
     u8g2.sendBuffer();
+    displayMirrorSend(u8g2);
 }
 
 void deauthSetup() {
@@ -272,6 +315,14 @@ void deauthSetup() {
     lastDeauthTime = 0;
     scanInProgress = false;
 
+    needsRedraw = true;
+    lastMode = MODE_MENU;
+    lastMenuSelection = -1;
+    lastApIndex = -1;
+    lastApCount = -1;
+    lastScanCount = 0;
+    lastScanUpdate = 0;
+
     startScan();
     lastScanTime = millis();
 }
@@ -282,7 +333,19 @@ void deauthLoop() {
     if (currentMode == MODE_SCANNING) {
         esp_wifi_scan_get_ap_num(&currentScanCount);
 
-        drawScanning();
+        if (currentScanCount != lastScanCount) {
+            lastScanCount = currentScanCount;
+            needsRedraw = true;
+        }
+        if (now - lastScanUpdate >= scanUpdateInterval) {
+            lastScanUpdate = now;
+            needsRedraw = true;
+        }
+
+        if (needsRedraw) {
+            drawScanning();
+            needsRedraw = false;
+        }
 
         if (now - scanStartTime > SCAN_DURATION) {
             processScanResults();
@@ -302,58 +365,103 @@ void deauthLoop() {
     bool down = digitalRead(BTN_DOWN) == LOW;
     bool left = digitalRead(BTN_BACK) == LOW;
     bool right = digitalRead(BTN_RIGHT) == LOW;
-    
+
     switch (currentMode) {
     case MODE_MENU:
-        drawMenu();
         if (up || down) {
             menuSelection ^= 1;
+            needsRedraw = true;
             delay(200);
         }
         if (right) {
             currentMode = (menuSelection == 0 ? MODE_ALL : MODE_LIST);
+            needsRedraw = true;
             delay(200);
         }
         break;
 
     case MODE_ALL:
-        drawAll();
         if (left) {
             currentMode = MODE_MENU;
+            needsRedraw = true;
             delay(200);
         }
         break;
 
     case MODE_LIST:
-        drawList();
         if (up && apCount) {
             apIndex = (apIndex - 1 + apCount) % apCount;
+            needsRedraw = true;
             delay(200);
         }
         if (down && apCount) {
             apIndex = (apIndex + 1) % apCount;
+            needsRedraw = true;
             delay(200);
         }
         if (right && apCount) {
             currentMode = MODE_DEAUTH_SINGLE;
+            needsRedraw = true;
             delay(200);
         }
         if (left) {
             currentMode = MODE_MENU;
+            needsRedraw = true;
             delay(200);
         }
         break;
 
     case MODE_DEAUTH_SINGLE:
-        drawDeauthSingle();
         if (left) {
             currentMode = MODE_LIST;
+            needsRedraw = true;
             delay(200);
         }
         break;
-        
+
     case MODE_SCANNING:
         break;
+    }
+
+    if (currentMode != lastMode) {
+        lastMode = currentMode;
+        needsRedraw = true;
+    }
+
+    if (menuSelection != lastMenuSelection) {
+        lastMenuSelection = menuSelection;
+        needsRedraw = true;
+    }
+
+    if (apIndex != lastApIndex &&
+        (currentMode == MODE_LIST || currentMode == MODE_DEAUTH_SINGLE)) {
+        lastApIndex = apIndex;
+        needsRedraw = true;
+    }
+
+    if (apCount != lastApCount) {
+        lastApCount = apCount;
+        needsRedraw = true;
+    }
+
+    if (needsRedraw) {
+        switch (currentMode) {
+        case MODE_MENU:
+            drawMenu();
+            break;
+        case MODE_ALL:
+            drawAll();
+            break;
+        case MODE_LIST:
+            drawList();
+            break;
+        case MODE_DEAUTH_SINGLE:
+            drawDeauthSingle();
+            break;
+        case MODE_SCANNING:
+            break;
+        }
+        needsRedraw = false;
     }
 
     if (now - lastDeauthTime >= DEAUTH_INTERVAL && apCount) {
@@ -361,6 +469,7 @@ void deauthLoop() {
         if (currentMode == MODE_ALL) {
             sendDeauth(apList[apIndex]);
             apIndex = (apIndex + 1) % apCount;
+            lastApIndex = apIndex;
         } else if (currentMode == MODE_DEAUTH_SINGLE) {
             sendDeauth(apList[apIndex]);
         }

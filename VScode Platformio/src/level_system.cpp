@@ -5,8 +5,9 @@
 
 #include <EEPROM.h>
 #include <U8g2lib.h>
-#include "../include/level_system.h" 
+#include "../include/level_system.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "../include/pindefs.h"
 
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
@@ -18,6 +19,8 @@ extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 
 static int currentXP = 0;
 static bool buttonCenterPressed = false;
+
+static bool needsRedraw = true;
 
 void saveLevelData();
 
@@ -53,8 +56,9 @@ void saveLevelData() {
 void levelSystemSetup() {
   EEPROM.begin(512);
   loadLevelData();
-  
+
   pinMode(BUTTON_PIN_CENTER, INPUT_PULLUP);
+  needsRedraw = true;
 }
 
 void addXP(int amount) {
@@ -63,8 +67,9 @@ void addXP(int amount) {
   } else {
     currentXP += amount;
   }
-  
+
   saveLevelData();
+  needsRedraw = true;
 }
 
 int getCurrentLevel() {
@@ -148,6 +153,7 @@ void displayLevelScreen() {
   u8g2.drawStr(0, 64, "<- Back");
   
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 void resetXPData() {
@@ -156,5 +162,8 @@ void resetXPData() {
 }
 
 void levelSystemLoop() {
-  displayLevelScreen();
+  if (needsRedraw) {
+    displayLevelScreen();
+    needsRedraw = false;
+  }
 }

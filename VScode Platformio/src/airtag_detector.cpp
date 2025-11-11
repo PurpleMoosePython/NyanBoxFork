@@ -7,6 +7,7 @@
 
 #include "../include/airtag_detector.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "esp_bt.h"
 #include "esp_gap_ble_api.h"
 #include "esp_bt_main.h"
@@ -30,6 +31,14 @@ bool isLocateMode = false;
 char locateTargetAddress[18] = {0};
 unsigned long lastButtonPress = 0;
 const unsigned long debounceTime = 200;
+
+static bool needsRedraw = true;
+static int lastDeviceCount = 0;
+static unsigned long lastLocateUpdate = 0;
+const unsigned long locateUpdateInterval = 1000;
+static unsigned long lastCountdownUpdate = 0;
+const unsigned long countdownUpdateInterval = 1000;
+static bool wasScanning = false;
 
 static bool isScanning = false;
 static unsigned long lastScanTime = 0;
@@ -208,6 +217,11 @@ void airtagDetectorSetup() {
     lastButtonPress = 0;
     isScanning = true;
     scanCompleted = false;
+    needsRedraw = true;
+    lastDeviceCount = 0;
+    lastLocateUpdate = 0;
+    lastCountdownUpdate = 0;
+    wasScanning = false;
 
     u8g2.begin();
     u8g2.setFont(u8g2_font_6x10_tr);
@@ -220,6 +234,7 @@ void airtagDetectorSetup() {
     u8g2.setFont(u8g2_font_5x8_tr);
     u8g2.drawStr(0, 60, "Press SEL to exit");
     u8g2.sendBuffer();
+    displayMirrorSend(u8g2);
 
     if (!btStarted()) {
         btStart();
@@ -251,32 +266,43 @@ void airtagDetectorLoop() {
     unsigned long now = millis();
 
     if (isScanning && !isLocateMode) {
-        u8g2.clearBuffer();
-        u8g2.setFont(u8g2_font_6x10_tr);
-        u8g2.drawStr(0, 10, "Scanning for");
-        u8g2.drawStr(0, 20, "AirTags...");
+        if (lastDeviceCount != (int)airtagDevices.size() || wasScanning != isScanning) {
+            lastDeviceCount = (int)airtagDevices.size();
+            wasScanning = isScanning;
 
-        char countStr[32];
-        snprintf(countStr, sizeof(countStr), "%d/%d devices", (int)airtagDevices.size(), MAX_DEVICES);
-        u8g2.drawStr(0, 35, countStr);
+            u8g2.clearBuffer();
+            u8g2.setFont(u8g2_font_6x10_tr);
+            u8g2.drawStr(0, 10, "Scanning for");
+            u8g2.drawStr(0, 20, "AirTags...");
 
-        int barWidth = 120;
-        int barHeight = 10;
-        int barX = (128 - barWidth) / 2;
-        int barY = 42;
+            char countStr[32];
+            snprintf(countStr, sizeof(countStr), "%d/%d devices", (int)airtagDevices.size(), MAX_DEVICES);
+            u8g2.drawStr(0, 35, countStr);
 
-        u8g2.drawFrame(barX, barY, barWidth, barHeight);
+            int barWidth = 120;
+            int barHeight = 10;
+            int barX = (128 - barWidth) / 2;
+            int barY = 42;
 
-        int fillWidth = (airtagDevices.size() * (barWidth - 4)) / MAX_DEVICES;
-        if (fillWidth > 0) {
-            u8g2.drawBox(barX + 2, barY + 2, fillWidth, barHeight - 4);
+            u8g2.drawFrame(barX, barY, barWidth, barHeight);
+
+            int fillWidth = (airtagDevices.size() * (barWidth - 4)) / MAX_DEVICES;
+            if (fillWidth > 0) {
+                u8g2.drawBox(barX + 2, barY + 2, fillWidth, barHeight - 4);
+            }
+
+            u8g2.setFont(u8g2_font_5x8_tr);
+            u8g2.drawStr(0, 62, "Press SEL to exit");
+
+            u8g2.sendBuffer();
+            displayMirrorSend(u8g2);
         }
-
-        u8g2.setFont(u8g2_font_5x8_tr);
-        u8g2.drawStr(0, 62, "Press SEL to exit");
-
-        u8g2.sendBuffer();
         return;
+    }
+
+    if (wasScanning != isScanning) {
+        wasScanning = isScanning;
+        needsRedraw = true;
     }
 
     if (!isScanning && scanCompleted && now - lastScanTime > scanInterval &&
@@ -312,12 +338,14 @@ void airtagDetectorLoop() {
             if (currentIndex < listStartIndex)
                 --listStartIndex;
             lastButtonPress = now;
+            needsRedraw = true;
         } else if (!isDetailView && !isLocateMode && digitalRead(BTN_DOWN) == LOW &&
                    currentIndex < (int)airtagDevices.size() - 1) {
             ++currentIndex;
             if (currentIndex >= listStartIndex + 5)
                 ++listStartIndex;
             lastButtonPress = now;
+            needsRedraw = true;
         } else if (!isDetailView && !isLocateMode && digitalRead(BTN_RIGHT) == LOW &&
                    !airtagDevices.empty()) {
             isDetailView = true;
@@ -326,6 +354,7 @@ void airtagDetectorLoop() {
                 isScanning = false;
             }
             lastButtonPress = now;
+            needsRedraw = true;
         } else if (isDetailView && !isLocateMode && digitalRead(BTN_RIGHT) == LOW &&
                    !airtagDevices.empty()) {
             isLocateMode = true;
@@ -336,6 +365,8 @@ void airtagDetectorLoop() {
                 esp_ble_gap_start_scanning(scanDuration);
             }
             lastButtonPress = now;
+            lastLocateUpdate = now;
+            needsRedraw = true;
         } else if (isLocateMode && digitalRead(BTN_BACK) == LOW) {
             isLocateMode = false;
             memset(locateTargetAddress, 0, sizeof(locateTargetAddress));
@@ -344,6 +375,7 @@ void airtagDetectorLoop() {
                 isScanning = false;
             }
             lastButtonPress = now;
+            needsRedraw = true;
         } else if (isDetailView && !isLocateMode && digitalRead(BTN_BACK) == LOW) {
             isDetailView = false;
             if (isScanning) {
@@ -351,10 +383,14 @@ void airtagDetectorLoop() {
                 isScanning = false;
             }
             lastButtonPress = now;
+            needsRedraw = true;
         }
     }
 
     if (airtagDevices.empty()) {
+        if (currentIndex != 0 || isDetailView || isLocateMode) {
+            needsRedraw = true;
+        }
         currentIndex = listStartIndex = 0;
         isDetailView = false;
         isLocateMode = false;
@@ -365,6 +401,27 @@ void airtagDetectorLoop() {
             constrain(listStartIndex, 0, max(0, (int)airtagDevices.size() - 5));
     }
 
+    if (isDetailView && now - lastLocateUpdate >= locateUpdateInterval) {
+        lastLocateUpdate = now;
+        needsRedraw = true;
+    }
+
+    if (isLocateMode && now - lastLocateUpdate >= locateUpdateInterval) {
+        lastLocateUpdate = now;
+        needsRedraw = true;
+    }
+
+    if (airtagDevices.empty() && scanCompleted && !isScanning &&
+        now - lastCountdownUpdate >= countdownUpdateInterval) {
+        lastCountdownUpdate = now;
+        needsRedraw = true;
+    }
+
+    if (!needsRedraw) {
+        return;
+    }
+
+    needsRedraw = false;
     u8g2.clearBuffer();
 
     if (airtagDevices.empty()) {
@@ -468,4 +525,5 @@ void airtagDetectorLoop() {
         }
     }
     u8g2.sendBuffer();
+    displayMirrorSend(u8g2);
 }

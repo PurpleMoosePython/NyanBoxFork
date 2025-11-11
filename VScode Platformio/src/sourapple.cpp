@@ -5,6 +5,7 @@
 */
 
 #include "../include/sourapple.h"
+#include "../include/display_mirror.h"
 #include "esp_bt.h"
 #include "esp_gap_ble_api.h"
 #include "esp_bt_main.h"
@@ -15,6 +16,11 @@ extern Adafruit_NeoPixel pixels;
 int count = 0;
 bool isSpamming = false;
 bool bleInitialized = false;
+
+static bool needsRedraw = true;
+static int lastDisplayedCount = 0;
+static unsigned long lastDisplayUpdate = 0;
+const unsigned long displayUpdateInterval = 1000;
 
 struct ContinuityModel {
     uint16_t value;
@@ -162,12 +168,16 @@ static void drawDisplay() {
     u8g2.drawStr(0, 62, "UP: Start/Stop");
     
     u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 void sourappleSetup() {
     count = 0;
     isSpamming = false;
     bleInitialized = false;
+    needsRedraw = true;
+    lastDisplayedCount = 0;
+    lastDisplayUpdate = 0;
     drawDisplay();
     delay(500);
 }
@@ -175,41 +185,54 @@ void sourappleSetup() {
 void sourappleLoop() {
     static unsigned long lastButtonCheck = 0;
     static unsigned long lastSpam = 0;
-    static unsigned long lastDisplayUpdate = 0;
     static unsigned long spamDelay = 20;
     static bool wasSpamming = false;
+    unsigned long now = millis();
 
-    if (millis() - lastButtonCheck > 300) {
+    if (now - lastButtonCheck > 300) {
         if (digitalRead(BUTTON_PIN_UP) == LOW) {
             isSpamming = !isSpamming;
-            
+
             if (!isSpamming && wasSpamming && bleInitialized) {
                 esp_ble_gap_stop_advertising();
                 delay(100);
             }
-            
+
             drawDisplay();
             delay(500);
-            lastButtonCheck = millis();
+            lastButtonCheck = now;
         }
     }
 
-    wasSpamming = isSpamming;
+    if (wasSpamming != isSpamming) {
+        wasSpamming = isSpamming;
+        needsRedraw = true;
+    }
 
-    if (isSpamming && millis() - lastSpam > spamDelay) {
+    if (isSpamming && now - lastSpam > spamDelay) {
         executeSpam();
         count++;
-        
+
         if (count > 99999) {
             count = 0;
         }
 
-        lastSpam = millis();
+        lastSpam = now;
     }
 
-    if ((isSpamming && count % 10 == 0) || 
-        (!isSpamming && millis() - lastDisplayUpdate > 1000)) {
+    if (!isSpamming && now - lastDisplayUpdate >= displayUpdateInterval) {
+        lastDisplayUpdate = now;
+        needsRedraw = true;
+    }
+
+    if (isSpamming && now - lastDisplayUpdate >= displayUpdateInterval) {
+        lastDisplayUpdate = now;
+        needsRedraw = true;
+    }
+
+    if (needsRedraw) {
         drawDisplay();
-        lastDisplayUpdate = millis();
+        lastDisplayedCount = count;
+        needsRedraw = false;
     }
 }

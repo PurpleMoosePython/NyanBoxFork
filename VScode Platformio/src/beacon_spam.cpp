@@ -6,6 +6,7 @@
 
 #include "../include/beacon_spam.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include <string.h>
@@ -173,6 +174,13 @@ uint16_t beacon_lastApCount = 0;
 bool beacon_isScanning = false;
 BeaconSpamMode returnToMode = BEACON_SPAM_MENU;
 
+static bool needsRedraw = true;
+static int lastMenuSelection = -1;
+static int lastSSIDIndex = -1;
+static int lastScannedSSIDsSize = 0;
+static bool lastSSIDSelectedState = false;
+static BeaconSpamMode lastBeaconSpamMode = BEACON_SPAM_MENU;
+
 void drawBeaconSpamMenu() {
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x10_tr);
@@ -184,6 +192,7 @@ void drawBeaconSpamMenu() {
   u8g2.setFont(u8g2_font_5x8_tr);
   u8g2.drawStr(0, 64, "U/D=Move R=OK SEL=Exit");
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 void drawSSIDList() {
@@ -202,6 +211,7 @@ void drawSSIDList() {
     u8g2.setFont(u8g2_font_5x8_tr);
     u8g2.drawStr(0, 62, "U/D=Move R=Toggle L=Back");
     u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 void processScanResults(unsigned long now) {
@@ -281,10 +291,12 @@ void startSSIDScan(BeaconSpamMode returnMode) {
 
     esp_wifi_scan_start(&scan_config, false);
     beaconSpamMode = BEACON_SPAM_SCANNING;
+    needsRedraw = true;
 }
 
 void updateSSIDScan() {
     unsigned long now = millis();
+    bool displayNeedsUpdate = false;
 
     uint16_t currentApCount = 0;
     esp_wifi_scan_get_ap_num(&currentApCount);
@@ -292,9 +304,10 @@ void updateSSIDScan() {
     if (currentApCount > beacon_lastApCount) {
         processScanResults(now);
         beacon_lastApCount = currentApCount;
+        displayNeedsUpdate = true;
     }
 
-    if (now - beacon_lastDisplayUpdate > DISPLAY_UPDATE_INTERVAL) {
+    if (displayNeedsUpdate || (now - beacon_lastDisplayUpdate > DISPLAY_UPDATE_INTERVAL)) {
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_6x10_tr);
         u8g2.drawStr(0, 10, "Scanning WiFi...");
@@ -319,6 +332,7 @@ void updateSSIDScan() {
         u8g2.setFont(u8g2_font_5x8_tr);
         u8g2.drawStr(0, 60, "Press SEL to exit");
         u8g2.sendBuffer();
+        displayMirrorSend(u8g2);
 
         beacon_lastDisplayUpdate = now;
     }
@@ -331,6 +345,7 @@ void updateSSIDScan() {
         beacon_isScanning = false;
         beacon_lastScanTime = now;
         beaconSpamMode = returnToMode;
+        needsRedraw = true;
 
         if (ssidIndex >= (int)scannedSSIDs.size() && !scannedSSIDs.empty()) {
             ssidIndex = 0;
@@ -365,18 +380,25 @@ void beaconSpamSetup() {
   ssidIndex = 0;
   beacon_lastScanTime = millis();
   scannedSSIDs.clear();
+
+  needsRedraw = true;
+  lastMenuSelection = -1;
+  lastSSIDIndex = -1;
+  lastScannedSSIDsSize = 0;
+  lastSSIDSelectedState = false;
+  lastBeaconSpamMode = BEACON_SPAM_MENU;
+
   drawBeaconSpamMenu();
 }
 
 void beaconSpamLoop() {
   currentTime = millis();
-  static unsigned long lastDisplayUpdate = 0;
 
   bool up = digitalRead(BTN_UP) == LOW;
   bool down = digitalRead(BTN_DOWN) == LOW;
   bool left = digitalRead(BTN_BACK) == LOW;
   bool right = digitalRead(BTN_RIGHT) == LOW;
-  
+
   bool anySelected = false;
   for (const auto& entry : scannedSSIDs) if (entry.selected) { anySelected = true; break; }
 
@@ -390,15 +412,26 @@ void beaconSpamLoop() {
     return;
   }
 
+  if (lastBeaconSpamMode != beaconSpamMode) {
+    lastBeaconSpamMode = beaconSpamMode;
+    needsRedraw = true;
+  }
+
   switch (beaconSpamMode) {
     case BEACON_SPAM_MENU:
-      drawBeaconSpamMenu();
+      if (lastMenuSelection != menuSelection) {
+        lastMenuSelection = menuSelection;
+        needsRedraw = true;
+      }
+
       if (up) {
         menuSelection = (menuSelection - 1 + 4) % 4;
+        needsRedraw = true;
         delay(200);
       }
       if (down) {
         menuSelection = (menuSelection + 1) % 4;
+        needsRedraw = true;
         delay(200);
       }
       if (right) {
@@ -411,17 +444,29 @@ void beaconSpamLoop() {
         } else {
           beaconSpamMode = BEACON_SPAM_RANDOM;
         }
+        needsRedraw = true;
         delay(200);
       }
       if (left) {
         beaconSpamMode = BEACON_SPAM_MENU;
+        needsRedraw = true;
         delay(200);
+      }
+
+      if (needsRedraw) {
+        needsRedraw = false;
+        drawBeaconSpamMenu();
       }
       break;
       
     case BEACON_SPAM_CLONE_ALL:
-      if (currentTime - lastDisplayUpdate >= 250) {
-        lastDisplayUpdate = currentTime;
+      if (lastScannedSSIDsSize != (int)scannedSSIDs.size()) {
+        lastScannedSSIDsSize = (int)scannedSSIDs.size();
+        needsRedraw = true;
+      }
+
+      if (needsRedraw) {
+        needsRedraw = false;
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_6x10_tr);
         u8g2.drawStr(0, 10, "Clone All SSIDs");
@@ -429,9 +474,13 @@ void beaconSpamLoop() {
         snprintf(buf, sizeof(buf), "Count: %d", (int)scannedSSIDs.size());
         u8g2.drawStr(0, 25, buf);
         u8g2.setFont(u8g2_font_5x8_tr);
-        u8g2.drawStr(0, 55, "L=Back SEL=Exit");
+        u8g2.drawStr(0, 40, "Spamming on channels");
+        u8g2.drawStr(0, 50, "1, 6, 11");
+        u8g2.drawStr(0, 62, "L=Back SEL=Exit");
         u8g2.sendBuffer();
+        displayMirrorSend(u8g2);
       }
+
       for (const auto& entry : scannedSSIDs) {
         bool useWPA2 = (random(10) < 4);
         uint8_t *packet = useWPA2 ? beaconPacketWPA2 : beaconPacketOpen;
@@ -463,81 +512,103 @@ void beaconSpamLoop() {
       }
       if (left) {
         beaconSpamMode = BEACON_SPAM_MENU;
+        needsRedraw = true;
         delay(200);
       }
       break;
-      
+
     case BEACON_SPAM_CLONE_SELECTED:
-      drawSSIDList();
-      if (up && !scannedSSIDs.empty()) {
-        ssidIndex = (ssidIndex - 1 + scannedSSIDs.size()) % scannedSSIDs.size();
-        delay(200);
-      }
-      if (down && !scannedSSIDs.empty()) {
-        ssidIndex = (ssidIndex + 1) % scannedSSIDs.size();
-        delay(200);
-      }
-      if (right && !scannedSSIDs.empty()) {
-        scannedSSIDs[ssidIndex].selected = !scannedSSIDs[ssidIndex].selected;
-        delay(200);
-      }
-      if (left) {
-        beaconSpamMode = BEACON_SPAM_MENU;
-        delay(200);
-      }
-      
-      if (anySelected) {
-        static unsigned long lastBeacon = 0;
-        const unsigned long beaconInterval = 20;
-        if (currentTime - lastBeacon > beaconInterval) {
-          for (const auto& entry : scannedSSIDs) {
-            if (entry.selected) {
-              bool useWPA2 = (random(10) < 4);
-              uint8_t *packet = useWPA2 ? beaconPacketWPA2 : beaconPacketOpen;
-              size_t packetSize = useWPA2 ? sizeof(beaconPacketWPA2) : sizeof(beaconPacketOpen);
-              
-              randomMac();
-              memcpy(&packet[10], macAddr, 6);
-              memcpy(&packet[16], macAddr, 6);
-              
-              uint16_t seqNum = random(4096) << 4;
-              packet[22] = seqNum & 0xFF;
-              packet[23] = (seqNum >> 8) & 0xFF;
-              
-              memset(&packet[38], ' ', 32);
-              size_t len = strlen(entry.ssid);
-              memcpy(&packet[38], entry.ssid, len);
-              packet[37] = len;
-              
-              uint16_t beaconInt = randomBeaconInterval();
-              packet[32] = beaconInt & 0xFF;
-              packet[33] = (beaconInt >> 8) & 0xFF;
-              
-              packet[82] = entry.channel;
-              uint64_t timestamp = (uint64_t)esp_timer_get_time();
-              memcpy(&packet[24], &timestamp, 8);
-              esp_wifi_set_channel(entry.channel, WIFI_SECOND_CHAN_NONE);
-              esp_wifi_80211_tx(WIFI_IF_STA, packet, packetSize, false);
-              delayMicroseconds(100);
+      {
+        bool currentSSIDSelectedState = !scannedSSIDs.empty() ? scannedSSIDs[ssidIndex].selected : false;
+        
+        if (lastSSIDIndex != ssidIndex || 
+            lastScannedSSIDsSize != (int)scannedSSIDs.size() ||
+            lastSSIDSelectedState != currentSSIDSelectedState) {
+          lastSSIDIndex = ssidIndex;
+          lastScannedSSIDsSize = (int)scannedSSIDs.size();
+          lastSSIDSelectedState = currentSSIDSelectedState;
+          needsRedraw = true;
+        }
+        
+        if (up && !scannedSSIDs.empty()) {
+          ssidIndex = (ssidIndex - 1 + scannedSSIDs.size()) % scannedSSIDs.size();
+          needsRedraw = true;
+          delay(200);
+        }
+        if (down && !scannedSSIDs.empty()) {
+          ssidIndex = (ssidIndex + 1) % scannedSSIDs.size();
+          needsRedraw = true;
+          delay(200);
+        }
+        if (right && !scannedSSIDs.empty()) {
+          scannedSSIDs[ssidIndex].selected = !scannedSSIDs[ssidIndex].selected;
+          needsRedraw = true;
+          delay(200);
+        }
+        if (left) {
+          beaconSpamMode = BEACON_SPAM_MENU;
+          needsRedraw = true;
+          delay(200);
+        }
+
+        if (needsRedraw) {
+          needsRedraw = false;
+          drawSSIDList();
+        }
+        
+        if (anySelected) {
+          static unsigned long lastBeacon = 0;
+          const unsigned long beaconInterval = 20;
+          if (currentTime - lastBeacon > beaconInterval) {
+            for (const auto& entry : scannedSSIDs) {
+              if (entry.selected) {
+                bool useWPA2 = (random(10) < 4);
+                uint8_t *packet = useWPA2 ? beaconPacketWPA2 : beaconPacketOpen;
+                size_t packetSize = useWPA2 ? sizeof(beaconPacketWPA2) : sizeof(beaconPacketOpen);
+                
+                randomMac();
+                memcpy(&packet[10], macAddr, 6);
+                memcpy(&packet[16], macAddr, 6);
+                
+                uint16_t seqNum = random(4096) << 4;
+                packet[22] = seqNum & 0xFF;
+                packet[23] = (seqNum >> 8) & 0xFF;
+                
+                memset(&packet[38], ' ', 32);
+                size_t len = strlen(entry.ssid);
+                memcpy(&packet[38], entry.ssid, len);
+                packet[37] = len;
+                
+                uint16_t beaconInt = randomBeaconInterval();
+                packet[32] = beaconInt & 0xFF;
+                packet[33] = (beaconInt >> 8) & 0xFF;
+                
+                packet[82] = entry.channel;
+                uint64_t timestamp = (uint64_t)esp_timer_get_time();
+                memcpy(&packet[24], &timestamp, 8);
+                esp_wifi_set_channel(entry.channel, WIFI_SECOND_CHAN_NONE);
+                esp_wifi_80211_tx(WIFI_IF_STA, packet, packetSize, false);
+                delayMicroseconds(100);
+              }
             }
+            lastBeacon = currentTime;
           }
-          lastBeacon = currentTime;
         }
       }
       break;
       
     case BEACON_SPAM_CUSTOM:
-      if (currentTime - lastDisplayUpdate >= 250) {
-        lastDisplayUpdate = currentTime;
+      if (needsRedraw) {
+        needsRedraw = false;
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_6x10_tr);
         u8g2.drawStr(0, 10, "Beacon Spam: Custom");
-        char status[32];
-        snprintf(status, sizeof(status), "Channel: %d", wifi_channel);
-        u8g2.drawStr(0, 25, status);
         u8g2.setFont(u8g2_font_5x8_tr);
-        u8g2.drawStr(0, 55, "L=Back SEL=Exit");
+        u8g2.drawStr(0, 25, "Spamming on channels");
+        u8g2.drawStr(0, 35, "1, 6, 11");
+        u8g2.drawStr(0, 62, "L=Back SEL=Exit");
         u8g2.sendBuffer();
+        displayMirrorSend(u8g2);
       }
       {
         static const int batchSize = 10;
@@ -627,22 +698,23 @@ void beaconSpamLoop() {
       }
       if (left) {
         beaconSpamMode = BEACON_SPAM_MENU;
+        needsRedraw = true;
         delay(200);
       }
       break;
-      
+
     case BEACON_SPAM_RANDOM:
-      if (currentTime - lastDisplayUpdate >= 250) {
-        lastDisplayUpdate = currentTime;
+      if (needsRedraw) {
+        needsRedraw = false;
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_6x10_tr);
         u8g2.drawStr(0, 10, "Beacon Spam: Random");
-        char status[32];
-        snprintf(status, sizeof(status), "Channel: %d", wifi_channel);
-        u8g2.drawStr(0, 25, status);
         u8g2.setFont(u8g2_font_5x8_tr);
-        u8g2.drawStr(0, 55, "L=Back SEL=Exit");
+        u8g2.drawStr(0, 25, "Spamming on channels");
+        u8g2.drawStr(0, 35, "1, 6, 11");
+        u8g2.drawStr(0, 62, "L=Back SEL=Exit");
         u8g2.sendBuffer();
+        displayMirrorSend(u8g2);
       }
       {
         static unsigned long lastRandom = 0;
@@ -701,6 +773,7 @@ void beaconSpamLoop() {
       if (left) {
         beaconSpamMode = BEACON_SPAM_MENU;
         menuSelection = 3;
+        needsRedraw = true;
         delay(200);
       }
       break;

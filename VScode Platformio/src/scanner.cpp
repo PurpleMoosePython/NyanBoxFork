@@ -3,9 +3,10 @@
    https://github.com/jbohack/nyanBOX
    ________________________________________ */
 
-#include <Arduino.h> 
+#include <Arduino.h>
 #include "../include/scanner.h"
 #include "../include/sleep_manager.h"
+#include "../include/display_mirror.h"
 #include "../include/pindefs.h"
 #include <esp_bt_main.h>
 
@@ -137,6 +138,7 @@ void outputChannels(void) {
   u8g2.print("]");
 
   u8g2.sendBuffer();
+  displayMirrorSend(u8g2);
 }
 
 void scannerSetup() {
