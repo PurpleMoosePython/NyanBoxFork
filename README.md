@@ -82,6 +82,7 @@ Built around an ESP32 with triple NRF24 modules, a crisp OLED display, and a 250
 - **BLE Spoofer** – Simulates BLE devices for testing and research
 
 ### 📡 Signal & Protocol Tools
+- **Flock Detector** - Detects Flock Safety surveillance cameras using dual-mode WiFi and BLE scanning. Identifies devices through SSID patterns, MAC OUI prefixes, and Bluetooth device names. Features real-time signal strength tracking with detailed device info and a locate mode for pinpointing camera positions.
 - **Scanner** – Scans the 2.4GHz frequency band to detect active channels and devices
 - **Analyzer** – Analyzes detected signals and provides detailed activity information
 
@@ -216,6 +217,7 @@ Love nyanBOX? Here's how you can help:
 - [PwnGridSpam](https://github.com/7h30th3r0n3/PwnGridSpam)
 - [ESP32-AirTag-Scanner](https://github.com/MatthewKuKanich/ESP32-AirTag-Scanner)
 - [ESP Web Tools](https://esphome.github.io/esp-web-tools/)
+- [Flock You](https://github.com/colonelpanichacks/flock-you)
 - [Original nRFBOX Project](https://github.com/cifertech/nrfbox)
 
 And thanks to everyone who's contributed code, reported bugs, purchased a device, or just shared the love. You're awesome!

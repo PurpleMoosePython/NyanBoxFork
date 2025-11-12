@@ -49,6 +49,7 @@
 #include "../include/legal_disclaimer.h"
 #include "../include/cardskimmer_detector.h"
 #include "../include/axon_detector.h"
+#include "../include/flock_detector.h"
 #include "../include/display_mirror.h"
 
 RF24 radios[] = {
@@ -442,6 +443,7 @@ constexpr int BLE_MENU_SIZE = sizeof(bleMenu) / sizeof(bleMenu[0]);
 
 MenuItem otherMenu[] = {
   { "SigKill",   nullptr, sigkillSetup,   sigkillLoop,   cleanupRadio },
+  { "Flock Detector", nullptr, flockDetectorSetup, flockDetectorLoop, cleanupFlockDetector },
   { "Scanner",      nullptr, scannerSetup,    scannerLoop,    cleanupRadio },
   { "Analyzer",     nullptr, analyzerSetup,   analyzerLoop,   cleanupRadio },
   { "Setting",      nullptr, settingSetup,    settingLoop,    noCleanup },
