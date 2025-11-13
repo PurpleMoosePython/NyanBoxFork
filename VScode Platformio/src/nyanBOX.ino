@@ -29,6 +29,7 @@
 #include "../include/sourapple.h"
 #include "../include/blescan.h"
 #include "../include/ble_spammer.h"
+#include "../include/swiftpair.h"
 #include "../include/flipperzero_detector.h"
 #include "../include/airtag_detector.h"
 #include "../include/airtag_spoofer.h"
@@ -213,6 +214,7 @@ bool isOffensiveApp(const char* appName) {
 
   return strstr(appName, "Deauth") != nullptr ||
          strstr(appName, "Spam") != nullptr ||
+         strstr(appName, "Swift Pair") != nullptr ||
          strstr(appName, "Sour Apple") != nullptr ||
          strstr(appName, "Spoofer") != nullptr ||
          strstr(appName, "Evil Portal") != nullptr;
@@ -435,6 +437,7 @@ MenuItem bleMenu[] = {
   { "AirTag Spoofer", nullptr, airtagSpooferSetup,     airtagSpooferLoop,       cleanupBLE },
   { "BLE Spammer",  nullptr, bleSpamSetup,             bleSpamLoop,             cleanupBLE },
   { "BLE Jammer",   nullptr, blejammerSetup,           blejammerLoop,           cleanupRadio },
+  { "Swift Pair",   nullptr, swiftpairSpamSetup,       swiftpairSpamLoop,       cleanupBLE },
   { "Sour Apple",   nullptr, sourappleSetup,           sourappleLoop,           cleanupBLE },
   { "BLE Spoofer",  nullptr, spooferSetup,             spooferLoop,             cleanupBLE },
   { "Back",         nullptr, nullptr,                  nullptr,                 noCleanup }
