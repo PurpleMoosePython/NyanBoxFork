@@ -29,11 +29,11 @@ static bool needsRedraw = true;
 static unsigned long lastActiveUpdate = 0;
 const unsigned long activeUpdateInterval = 1000;
 
-// BLE advertising parameters (non-connectable)
+// BLE advertising parameters (connectable but we reject connections in the esp_ble_gap_register_callback)
 static esp_ble_adv_params_t adv_params = {
     .adv_int_min = 0x20,
     .adv_int_max = 0x40,
-    .adv_type = ADV_TYPE_NONCONN_IND,
+    .adv_type = ADV_TYPE_IND,
     .own_addr_type = BLE_ADDR_TYPE_RANDOM,
     .channel_map = ADV_CHNL_ALL,
     .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY
@@ -276,7 +276,8 @@ void bleSpamSetup() {
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P9);
-    
+
+    // CB registration to handle incoming connections (we just ignore them)
     esp_ble_gap_register_callback([](esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param){});
 
     bleInitialized = true;
