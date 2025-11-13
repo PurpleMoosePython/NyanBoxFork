@@ -111,7 +111,7 @@ void settingLoop() {
   static unsigned long lastDownPress = 0;
   static unsigned long lastRightPress = 0;
   static unsigned long lastLeftPress = 0;
-  const unsigned long debounceDelay = 150;
+  const unsigned long debounceDelay = 200;
 
   checkIdle();
 

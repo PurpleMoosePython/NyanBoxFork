@@ -24,7 +24,7 @@ static SigKillMode currentMode = SIG_MENU;
 static ProtocolType selectedProtocol = ALL;
 static int menuSelection = 0;
 static unsigned long lastButtonPress = 0;
-const unsigned long debounceDelay = 150;
+const unsigned long debounceDelay = 200;
 
 static bool needsRedraw = true;
 static int lastMenuSelection = -1;

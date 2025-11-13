@@ -32,7 +32,7 @@ enum BleJammerMode { JAM_MENU, JAM_BLE, JAM_BLUETOOTH, JAM_ALL };
 static BleJammerMode jammerMode = JAM_MENU;
 static int menuSelection = 0;
 static unsigned long lastButtonPress = 0;
-const unsigned long debounceDelay = 150;
+const unsigned long debounceDelay = 200;
 
 static bool needsRedraw = true;
 

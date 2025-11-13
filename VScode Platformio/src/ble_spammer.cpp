@@ -21,7 +21,7 @@ enum BleSpamMode { BLE_SPAM_MENU, BLE_SPAM_RANDOM, BLE_SPAM_EMOJI, BLE_SPAM_CUST
 static BleSpamMode bleSpamMode = BLE_SPAM_MENU;
 static int menuSelection = 0;
 static unsigned long lastButtonPress = 0;
-const unsigned long debounceDelay = 150;
+const unsigned long debounceDelay = 200;
 static bool bleInitialized = false;
 static bool isCurrentlyAdvertising = false;
 

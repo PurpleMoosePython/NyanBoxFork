@@ -97,7 +97,7 @@ unsigned long leftDebounceTime = 0;
 
 const unsigned long initialDelay   = 500;
 const unsigned long repeatInterval = 250;
-const unsigned long debounceDelay  = 150;
+const unsigned long debounceDelay  = 200;
 
 static bool needsRedraw = true;
 
@@ -384,7 +384,7 @@ void cleanupRadio() {
 
 void cleanupBLE() {
   delay(100);
-  
+
   esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
   if (bt_state == ESP_BLUEDROID_STATUS_ENABLED) {
     esp_bluedroid_disable();
