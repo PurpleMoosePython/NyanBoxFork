@@ -77,13 +77,11 @@ static void bda_to_string(uint8_t *bda, char *str, size_t size) {
 
 void parseManufacturerData(uint8_t *manufData, uint8_t manufLen, uint16_t &level, char *version) {
   if (manufData == NULL || manufLen < 8 || manufData[0] != 0xFF || manufData[1] != 0xFF) {
-    level = 0;
-    strcpy(version, "Unknown");
     return;
   }
 
   level = (manufData[2] << 8) | manufData[3];
-  uint32_t versionNum = (manufData[4] << 24) | (manufData[5] << 16) | 
+  uint32_t versionNum = (manufData[4] << 24) | (manufData[5] << 16) |
                         (manufData[6] << 8) | manufData[7];
 
   int major = versionNum / 10000;
@@ -139,43 +137,31 @@ bool hasNyanboxService(uint8_t *adv_data, uint8_t adv_data_len) {
 }
 
 static void process_scan_result(esp_ble_gap_cb_param_t *scan_result) {
-    if (!hasNyanboxService(scan_result->scan_rst.ble_adv, scan_result->scan_rst.adv_data_len)) {
-        return;
-    }
-
     uint8_t *bda = scan_result->scan_rst.bda;
     char addrStr[18];
     bda_to_string(bda, addrStr, sizeof(addrStr));
 
     if (strlen(addrStr) < 12) return;
 
-    if (isLocateMode && strlen(locateTargetAddress) > 0) {
-        if (strcmp(addrStr, locateTargetAddress) != 0) {
-            return;
-        }
-    } else if (nyanBoxDevices.size() >= MAX_DEVICES) {
-        return;
-    }
-
     for (size_t i = 0; i < nyanBoxDevices.size(); i++) {
         if (strcmp(nyanBoxDevices[i].address, addrStr) == 0) {
             nyanBoxDevices[i].rssi = scan_result->scan_rst.rssi;
             nyanBoxDevices[i].lastSeen = millis();
-            
+
             uint8_t manuf_len = 0;
             uint8_t *manuf_data = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
                                                            ESP_BLE_AD_MANUFACTURER_SPECIFIC_TYPE,
                                                            &manuf_len);
             if (manuf_data != NULL && manuf_len >= 8) {
-                parseManufacturerData(manuf_data, manuf_len, 
+                parseManufacturerData(manuf_data, manuf_len,
                                      nyanBoxDevices[i].level, nyanBoxDevices[i].version);
             }
-            
+
             uint8_t adv_name_len = 0;
             uint8_t *adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
                                                           ESP_BLE_AD_TYPE_NAME_CMPL,
                                                           &adv_name_len);
-            
+
             if (adv_name == NULL) {
                 adv_name_len = 0;
                 adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
@@ -196,6 +182,18 @@ static void process_scan_result(esp_ble_gap_cb_param_t *scan_result) {
             }
             return;
         }
+    }
+
+    if (!hasNyanboxService(scan_result->scan_rst.ble_adv, scan_result->scan_rst.adv_data_len)) {
+        return;
+    }
+
+    if (isLocateMode && strlen(locateTargetAddress) > 0) {
+        if (strcmp(addrStr, locateTargetAddress) != 0) {
+            return;
+        }
+    } else if (nyanBoxDevices.size() >= MAX_DEVICES) {
+        return;
     }
 
     NyanBoxDevice newDev = {};
