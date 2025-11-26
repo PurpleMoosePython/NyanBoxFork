@@ -62,7 +62,7 @@ Built around an ESP32 with triple NRF24 modules, a crisp OLED display, and a 250
 ### 📶 WiFi Tools
 - **WiFi Scanner** – Detects nearby WiFi access points
 - **Channel Analyzer** – Monitors WiFi channel utilization and signal strength for network planning
-- **WiFi Deauther** – Disrupts 2.4GHz WiFi device communication
+- **WiFi Deauther** – Educational tool for testing network security with deauthentication frames on authorized networks
 - **Deauth Scanner** – Monitors and analyzes WiFi deauthentication frames in real-time
 - **Beacon Spam** – Broadcasts multiple fake WiFi networks for testing. Choose to clone real nearby networks, select specific SSIDs, or use a list of random names.
 - **Evil Portal** – Creates captive portal with multiple templates (Generic, Facebook, Google) that automatically scans nearby networks for realistic SSID spoofing and credential capture.
@@ -214,7 +214,6 @@ Love nyanBOX? Here's how you can help:
 
 - [Poor Man's 2.4 GHz Scanner](https://forum.arduino.cc/t/poor-mans-2-4-ghz-scanner/54846)
 - [arduino_oled_menu](https://github.com/upiir/arduino_oled_menu)
-- [nRF24L01-WiFi-Jammer](https://github.com/hugorezende/nRF24L01-WiFi-Jammer)
 - [Universal-RC-system](https://github.com/alexbeliaev/Universal-RC-system)
 - [AppleJuice](https://github.com/ECTO-1A/AppleJuice)
 - [ESP32-Sour-Apple](https://github.com/RapierXbox/ESP32-Sour-Apple)
